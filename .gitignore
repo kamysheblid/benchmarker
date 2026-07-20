@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Benchmark run output
+benchmark_runs/
+
+# Tooling state
+.hive/
+.hive2/
