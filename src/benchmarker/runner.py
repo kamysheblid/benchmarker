@@ -64,6 +64,7 @@ class Runner:
         run_dir: Path,
         max_retries: int = 1,
         progress: ProgressReporter | None = None,
+        static_params: dict[str, Any] | None = None,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -72,6 +73,8 @@ class Runner:
         self.run_dir = Path(run_dir)
         self.max_retries = max_retries
         self.progress = progress or ProgressReporter()
+        # Fixed params merged into every request (e.g. enable_thinking:false).
+        self.static_params = dict(static_params or {})
 
     async def run(self) -> list[RunResult]:
         """Execute the full benchmark, returning and persisting all results."""
@@ -113,7 +116,7 @@ class Runner:
             messages.append({"role": "system", "content": test.system})
         messages.append({"role": "user", "content": test.prompt})
 
-        params: dict[str, Any] = dict(config)
+        params: dict[str, Any] = {**self.static_params, **config}
         if test.max_tokens is not None:
             params["max_tokens"] = test.max_tokens
 

@@ -92,6 +92,11 @@ class ParamsConfig(BaseModel):
 
     optimizer: OptimizerConfig
     parameters: list[ParameterSpec] = Field(default_factory=list)
+    # Fixed params sent with every request (merged under sampled params).
+    # Useful for reasoning models, e.g. {"chat_template_kwargs":
+    # {"enable_thinking": False}} so the token budget is spent on the
+    # answer rather than the thinking trace.
+    static_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class TestCase(BaseModel):

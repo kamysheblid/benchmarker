@@ -143,3 +143,23 @@ async def test_runner_progress_reporter_called(tmp_path: Path) -> None:
     assert reporter.started == 6
     assert reporter.advances == 6
     assert reporter.finished == 1
+
+
+async def test_runner_merges_static_params(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.2, step=0.1)]
+    optimizer = GridOptimizer(specs)  # 2 trials
+    client = _FakeClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        static_params={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    await runner.run()
+    # static params must be present in every call, alongside sampled params.
+    assert len(client.calls) == 2
+    for _messages, _model, params in client.calls:
+        assert params["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "temperature" in params

@@ -93,7 +93,15 @@ def run(
     client = LLMClient(base_url=url) if url else LLMClient()
     optimizer = create_optimizer(params.optimizer, params.parameters)
     reporter = _RichProgress()
-    runner = Runner(client, suite, optimizer, model, run_dir, progress=reporter)
+    runner = Runner(
+        client,
+        suite,
+        optimizer,
+        model,
+        run_dir,
+        progress=reporter,
+        static_params=params.static_params,
+    )
     results = asyncio.run(runner.run())
 
     _print_speed_table(results)
