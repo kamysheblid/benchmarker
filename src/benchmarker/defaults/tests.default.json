@@ -1,0 +1,26 @@
+[
+  {
+    "id": "creative",
+    "prompt": "Write a short, evocative two-sentence poem about a quiet winter morning.",
+    "max_tokens": 120,
+    "repeat": 2
+  },
+  {
+    "id": "reasoning",
+    "prompt": "A train leaves at 2:00 PM traveling 60 mph. Another leaves the same station at 3:00 PM on a parallel track traveling 90 mph. At what time does the second train catch the first? Show your reasoning step by step.",
+    "max_tokens": 200,
+    "repeat": 2
+  },
+  {
+    "id": "coding",
+    "prompt": "Write a Python function `def chunk(seq, n):` that splits a sequence into consecutive chunks of size n, with the final chunk containing any remainder. Include a one-line docstring and a short usage example in a comment.",
+    "max_tokens": 200,
+    "repeat": 2
+  },
+  {
+    "id": "factual",
+    "prompt": "In three bullet points, summarize the main differences between TCP and UDP.",
+    "max_tokens": 150,
+    "repeat": 2
+  }
+]
