@@ -76,11 +76,13 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             **params,
         }
         start = time.monotonic()
         ttft: float = 0.0
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         prompt_tokens = 0
         completion_tokens = 0
 
@@ -121,6 +123,15 @@ class LLMClient:
                                 if ttft == 0.0:
                                     ttft = time.monotonic() - start
                                 text_parts.append(content)
+                            # Reasoning models (e.g. Qwen3) stream the thinking
+                            # trace in `reasoning_content`. Capture it so the
+                            # response is never blank when the answer `content`
+                            # is empty or consumed by a small max_tokens budget.
+                            reasoning = delta.get("reasoning_content")
+                            if reasoning:
+                                if ttft == 0.0:
+                                    ttft = time.monotonic() - start
+                                reasoning_parts.append(reasoning)
         except httpx.HTTPError as exc:  # timeout, connect error, etc.
             raise LLMClientError(f"Request to LLM endpoint failed: {exc}") from exc
 
@@ -129,10 +140,15 @@ class LLMClient:
             ttft = total_time
         tokens_per_sec = (completion_tokens / total_time) if total_time > 0 else 0.0
 
+        response_text = "".join(text_parts)
+        if not response_text and reasoning_parts:
+            # Fall back to the reasoning trace so the record is not empty.
+            response_text = "".join(reasoning_parts)
+
         return CompletionResult(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            response_text="".join(text_parts),
+            response_text=response_text,
             ttft=ttft,
             total_time=total_time,
             tokens_per_sec=tokens_per_sec,
