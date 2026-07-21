@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+logger = logging.getLogger(__name__)
+
 from benchmarker.client import LLMClientError
 from benchmarker.config import TestSuite
 from benchmarker.eval_file import JUDGE_PROMPT_FILE, generate_judge_prompt
+from benchmarker.optimizer_history import OptimizerHistory, OptimizerTrial
 from benchmarker.optimizers import BaseOptimizer
 
 RAW_DATA_FILE = "raw_data.json"
 AUTO_EVAL_FILE = "scores_auto.json"
+OPTIMIZER_HISTORY_FILE = "optimizer_history.json"
 
 
 class RunResult(BaseModel):
@@ -79,6 +84,7 @@ class Runner:
         auto_eval: bool = False,
         cost_per_1m_input: float = 0.0,
         cost_per_1m_output: float = 0.0,
+        history_path: Path | None = None,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -92,6 +98,8 @@ class Runner:
         self.auto_eval = auto_eval
         self.cost_per_1m_input = cost_per_1m_input
         self.cost_per_1m_output = cost_per_1m_output
+        self.history_path = history_path
+        self._history: list[OptimizerTrial] = []
 
     async def run(self) -> tuple[list[RunResult], dict[str, Any] | None]:
         """Execute the full benchmark, returning and persisting all results.
@@ -105,6 +113,15 @@ class Runner:
         per_trial = sum(t.repeat for t in self.test_suite.tests) or 1
         total_steps = self.optimizer.estimated_steps() * per_trial
         self.progress.start(total_steps)
+
+        if self.history_path and self.history_path.exists():
+            if hasattr(self.optimizer, "from_history"):
+                self.optimizer = self.optimizer.from_history(
+                    self.history_path,
+                    self.optimizer.parameters,
+                    getattr(self.optimizer, "budget", 0),
+                    getattr(self.optimizer, "seed", None),
+                )
 
         trial_index = 0
         while True:
@@ -123,11 +140,14 @@ class Runner:
 
             avg_speed = self._avg_speed(config_results)
             self.optimizer.tell({"tokens_per_sec": avg_speed})
+            self._history.append(OptimizerTrial(params=config, tokens_per_sec=avg_speed))
             trial_index += 1
             self._save(results)
+            self._save_history()
         self.progress.finish()
 
         self._save(results)
+        self._save_history()
         judge_path = self.run_dir / JUDGE_PROMPT_FILE
         generate_judge_prompt(self.run_dir, results, out_path=judge_path)
         # config_map.json is written alongside the judge prompt by generate_judge_prompt
@@ -224,3 +244,15 @@ class Runner:
                     "scores": metrics,
                 })
         path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+
+    def _save_history(self) -> None:
+        """Persist optimizer trial history to JSON."""
+        if not self.history_path:
+            return
+        try:
+            history = OptimizerHistory()
+            for trial in self._history:
+                history.add_trial(trial)
+            history.save(self.history_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("failed to save optimizer history: %s", exc)
