@@ -37,7 +37,7 @@ More text after."""
             extract_json('{"scores": {}')
 
     def test_malformed_json_inside_braces(self) -> None:
-        with pytest.raises(ValueError, match="failed to parse"):
+        with pytest.raises(ValueError, match="Failed to parse JSON"):
             extract_json('{"scores": broken, "recommendation": "conclude"}')
 
 
@@ -79,7 +79,7 @@ class TestValidate:
     def test_out_of_range_score(self) -> None:
         with pytest.raises(ValueError, match="out of range"):
             validate_judge_response({
-                "scores": {"cfg1": {"overall": 99}},
+                "scores": {"cfg1": {"overall": 101}},
                 "recommendation": "conclude",
                 "confidence": "high",
                 "reasoning": "too high",
@@ -111,7 +111,7 @@ class TestParseAndAct:
         captured = capsys.readouterr().out
         assert "CONCLUDE" in captured
         assert "cfg_a" in captured
-        assert "BENCHMARK COMPLETE" in captured
+        assert "Best config" in captured
 
     def test_expand_output(self, capsys: pytest.CaptureFixture) -> None:
         text = """{
@@ -124,7 +124,7 @@ class TestParseAndAct:
         parse_and_act(text)
         captured = capsys.readouterr().out
         assert "EXPAND" in captured
-        assert "broaden" in captured.lower()
+        assert "widened" in captured.lower()
 
     def test_refine_updates_params(self, tmp_path: Path) -> None:
         params_path = tmp_path / "params.yaml"
@@ -156,19 +156,25 @@ class TestParseAndAct:
                 {"name": "temperature", "type": "float", "low": 0.0, "high": 1.5, "step": 0.1},
             ],
         }))
+        # Write a config_map so the parser can resolve config_1
+        import json
+        config_map_path = tmp_path / "config_map.json"
+        config_map_path.write_text(json.dumps({
+            "config_1": '{"temperature": 0.8}'
+        }))
         # No refinement_hint provided — should infer from best config key
         text = """{
-            "scores": {"{\\"temperature\\": 0.8}": {"overall": 8}},
+            "scores": {"config_1": {"overall": 8}},
             "recommendation": "refine",
             "confidence": "medium",
             "reasoning": "Narrow down.",
             "refinement_hint": null
         }"""
-        parse_and_act(text, params_path=params_path)
+        parse_and_act(text, params_path=params_path, run_dir=tmp_path)
         updated = yaml.safe_load(params_path.read_text())
-        # Should have narrowed around 0.8
-        assert updated["parameters"][0]["low"] >= 0.6
-        assert updated["parameters"][0]["high"] <= 1.0
+        # Should have narrowed around 0.8 (span 1.5, 20% = 0.3, so 0.5-1.1)
+        assert updated["parameters"][0]["low"] >= 0.5
+        assert updated["parameters"][0]["high"] <= 1.1
 
     def test_malformed_judge_reply(self) -> None:
         with pytest.raises(ValueError):
