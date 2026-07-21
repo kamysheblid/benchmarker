@@ -161,3 +161,38 @@ def test_judge_instructions_generic_placeholder_when_no_categories(tmp_path: Pat
     text = out.read_text()
 
     assert "per-category" in text
+
+
+def test_judge_prompt_includes_success_rate_and_coverage(tmp_path: Path) -> None:
+    """Config summary table should include success rate and coverage columns."""
+    results = [
+        RunResult(
+            config={"temperature": 0.7}, test_id="t1", repetition=1, prompt="Say hi",
+            response_text="Hello!", ttft=0.05, total_time=0.5, tokens_per_sec=10.0,
+            completion_tokens=2, prompt_tokens=3,
+            success_rate=0.75, coverage=0.5,
+        ),
+        RunResult(
+            config={"temperature": 0.7}, test_id="t2", repetition=1, prompt="Count to 3",
+            response_text="1 2 3", ttft=0.06, total_time=0.6, tokens_per_sec=9.0,
+            completion_tokens=3, prompt_tokens=4,
+            success_rate=0.75, coverage=0.5,
+        ),
+        RunResult(
+            config={"temperature": 1.0}, test_id="t1", repetition=1, prompt="Say hi",
+            response_text="Hi there.", ttft=0.04, total_time=0.4, tokens_per_sec=12.0,
+            completion_tokens=2, prompt_tokens=3,
+            success_rate=1.0, coverage=1.0,
+        ),
+    ]
+    out = tmp_path / "judge_prompt.md"
+    generate_judge_prompt(tmp_path, results, out_path=out)
+    text = out.read_text()
+
+    # Columns should be present
+    assert "Success Rate" in text or "success_rate" in text
+    assert "Coverage" in text or "coverage" in text
+    # Values should appear
+    assert "0.75" in text
+    assert "0.5" in text
+    assert "1.0" in text
