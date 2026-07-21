@@ -221,6 +221,12 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
     if not path.is_dir():
         raise FileNotFoundError(f"Benchmark directory not found: {path}")
 
+    if categories is not None:
+        available = set(discover_categories(path))
+        unknown = set(categories) - available
+        if unknown:
+            raise ValueError(f"unknown category(s): {', '.join(sorted(unknown))}")
+
     seen: set[str] = set()
     tests: list[dict[str, Any]] = []
 
