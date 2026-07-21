@@ -63,7 +63,7 @@ class LLMClient:
         Args:
             messages: Chat messages in OpenAI format.
             model: Model name to query.
-            **params: Sampling parameters (temperature, top_k, ...) forwarded to
+            **params: Sampling parameters (temperature, top_k, stop, ...) forwarded to
                 the endpoint.
 
         Returns:

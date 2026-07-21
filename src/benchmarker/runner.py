@@ -119,6 +119,8 @@ class Runner:
         params: dict[str, Any] = {**self.static_params, **config}
         if test.max_tokens is not None:
             params["max_tokens"] = test.max_tokens
+        if test.stop is not None:
+            params["stop"] = test.stop
 
         last_error: str | None = None
         for _ in range(self.max_retries + 1):

@@ -123,3 +123,26 @@ async def test_complete_passes_params_and_auth() -> None:
     assert payload["top_k"] == 40
     # ensure kwargs do not include reserved keys
     assert "messages" in payload and "model" in payload
+
+
+@respx.mock
+async def test_complete_passes_stop_sequence() -> None:
+    route = respx.post(BASE_URL).mock(
+        return_value=Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_stream_body(
+                ["ok"], {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            ),
+        )
+    )
+    client = LLMClient(base_url=BASE_URL)
+    await client.complete(
+        messages=[{"role": "user", "content": "x"}], model="m", stop=["\n```", "\ndef "]
+    )
+    assert route.called
+    request = route.calls.last.request
+    import json
+
+    payload = json.loads(request.content)
+    assert payload["stop"] == ["\n```", "\ndef "]

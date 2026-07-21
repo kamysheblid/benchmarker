@@ -45,6 +45,14 @@ def test_test_case_default_repeat() -> None:
     assert tc.repeat == 1
     assert tc.max_tokens is None
     assert tc.system is None
+    assert tc.stop is None
+    assert tc.reasoning is None
+
+
+def test_test_case_with_stop_and_reasoning() -> None:
+    tc = TestCase(id="t1", prompt="Hello", stop=["\n```", "\ndef "], reasoning=False)
+    assert tc.stop == ["\n```", "\ndef "]
+    assert tc.reasoning is False
 
 
 # --------------------------------------------------------------------------- #

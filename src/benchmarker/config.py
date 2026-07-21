@@ -110,6 +110,8 @@ class TestCase(BaseModel):
     system: str | None = None
     max_tokens: PositiveInt | None = None
     repeat: int = 1
+    stop: list[str] | None = None
+    reasoning: bool | None = None  # True = encourage CoT, False = discourage, None = default
 
     def model_post_init(self, _context: Any) -> None:
         if not self.prompt.strip():
