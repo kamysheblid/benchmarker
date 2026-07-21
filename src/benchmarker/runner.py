@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from benchmarker.client import LLMClientError
 from benchmarker.config import TestSuite
-from benchmarker.eval_file import EVAL_FILE_NAME, generate_eval_md
+from benchmarker.eval_file import JUDGE_PROMPT_FILE, generate_judge_prompt
 from benchmarker.optimizers import BaseOptimizer
 
 RAW_DATA_FILE = "raw_data.json"
@@ -128,8 +128,8 @@ class Runner:
         self.progress.finish()
 
         self._save(results)
-        eval_path = self.run_dir / EVAL_FILE_NAME
-        generate_eval_md(self.run_dir, results, out_path=eval_path)
+        judge_path = self.run_dir / JUDGE_PROMPT_FILE
+        generate_judge_prompt(self.run_dir, results, out_path=judge_path)
 
         # Auto-evaluation
         auto_scores: dict[str, Any] | None = None

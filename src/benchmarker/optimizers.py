@@ -1,4 +1,4 @@
-"""Optimizer implementations for parameter search (Phase 5).
+"""?Optimizer implementations for parameter search (Phase 5).
 
 Provides a pluggable interface (:class:`BaseOptimizer`) with three strategies:
 grid search, random search, and Bayesian optimization backed by Optuna.
@@ -238,12 +238,102 @@ class ControlledOptimizer(BaseOptimizer):
         return len(self._combos)
 
 
+class AdaptiveOptimizer(BaseOptimizer):
+    """Narrowed refinement of a previous search based on a refinement hint.
+
+    Accepts the original parameter spec and a refinement hint dict like
+    ``{"temperature": [0.7, 0.9], "top_p": [0.8, 1.0]}``. Generates a grid
+    over the hinted ranges with a finer step (controlled by ``resolution_factor``).
+
+    When no hint is given, delegates to ``GridOptimizer`` with the original spec.
+    """
+
+    def __init__(
+        self,
+        parameters: list[ParameterSpec],
+        refinement_hint: dict[str, list[float]] | None = None,
+        resolution_factor: int = 5,
+    ) -> None:
+        super().__init__(parameters)
+        self.refinement_hint = refinement_hint or {}
+        self.resolution_factor = resolution_factor
+        self._combos = self._build_refined()
+        self._index = 0
+
+    def _build_refined(self) -> list[dict[str, Any]]:
+        """Build a refined grid over hinted ranges, or fall back to the original grid."""
+        if not self.refinement_hint:
+            # No hint → full original grid
+            return GridOptimizer(self.parameters)._combos
+
+        combos: list[dict[str, Any]] = []
+        refined_specs: list[ParameterSpec] = []
+
+        for spec in self.parameters:
+            hint = self.refinement_hint.get(spec.name)
+            if hint and len(hint) >= 2:
+                lo, hi = float(hint[0]), float(hint[1])
+                # Create a narrowed spec with finer resolution
+                refined_specs.append(
+                    ParameterSpec(
+                        name=spec.name,
+                        type=spec.type,
+                        low=lo,
+                        high=hi,
+                        step=(hi - lo) / self.resolution_factor,
+                        choices=spec.choices,
+                    )
+                )
+            else:
+                refined_specs.append(spec)
+
+        value_lists: list[list[Any]] = []
+        for spec in refined_specs:
+            if spec.type is ParameterType.CATEGORICAL:
+                vals = list(spec.choices or [])
+            elif spec.step is not None:
+                vals = []
+                v = spec.low
+                while v <= spec.high + 1e-9:
+                    if spec.type is ParameterType.INT:
+                        vals.append(int(round(v)))
+                    else:
+                        vals.append(float(v))
+                    v += spec.step
+            else:
+                vals = [spec.low, spec.high]
+            value_lists.append(vals)
+
+        for combo in itertools.product(*value_lists):
+            combos.append({spec.name: val for spec, val in zip(refined_specs, combo)})
+        return combos
+
+    def suggest(self) -> dict[str, Any]:
+        if self._index >= len(self._combos):
+            raise StopIteration
+        combo = self._combos[self._index]
+        self._index += 1
+        return dict(combo)
+
+    def estimated_steps(self) -> int:
+        return len(self._combos)
+
+
 def create_optimizer(
     config: OptimizerConfig,
     parameters: list[ParameterSpec],
     seed: int | None = None,
+    refinement_hint: dict[str, list[float]] | None = None,
+    resolution_factor: int = 5,
 ) -> BaseOptimizer:
-    """Factory: build the optimizer described by ``config``."""
+    """Factory: build the optimizer described by ``config``.
+
+    When ``refinement_hint`` is provided and the optimizer type is ``grid``,
+    an :class:`AdaptiveOptimizer` is returned instead — narrowing the search
+    space to the hinted ranges with finer granularity.
+    """
+    if refinement_hint and config.type in ("grid", "random"):
+        return AdaptiveOptimizer(parameters, refinement_hint=refinement_hint, resolution_factor=resolution_factor)
     if config.type == "grid":
         return GridOptimizer(parameters)
     if config.type == "random":

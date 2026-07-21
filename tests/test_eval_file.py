@@ -1,8 +1,8 @@
-"""Tests for eval-file generation (Phase 7)."""
+"""Tests for judge-prompt generation (Phase 7)."""
 
 from pathlib import Path
 
-from benchmarker.eval_file import generate_eval_md
+from benchmarker.eval_file import generate_judge_prompt
 from benchmarker.runner import RunResult, config_key
 
 
@@ -26,14 +26,14 @@ def _results() -> list[RunResult]:
     ]
 
 
-def test_generate_eval_md_structure(tmp_path: Path) -> None:
+def test_generate_judge_prompt_structure(tmp_path: Path) -> None:
     results = _results()
-    out = tmp_path / "eval_output.md"
-    generate_eval_md(tmp_path, results, out_path=out)
+    out = tmp_path / "judge_prompt.md"
+    generate_judge_prompt(tmp_path, results, out_path=out)
     text = out.read_text()
 
     # one section per unique config
-    assert "temperature=0.7" in text or "temperature\": 0.7" in text
+    assert "temperature\": 0.7" in text or "temperature=0.7" in text
     # config key appears as heading
     key07 = config_key({"temperature": 0.7})
     key10 = config_key({"temperature": 1.0})
@@ -45,19 +45,20 @@ def test_generate_eval_md_structure(tmp_path: Path) -> None:
     assert "Count to 3" in text
     assert "1 2 3" in text
     assert "Hi there." in text
-    # rating template block present
-    assert "RATING" in text.upper() or "rating" in text.lower()
-    assert "overall" in text.lower()
+    # Config summary table present
+    assert "## Config Summary" in text
+    assert "Config | Avg Tok/s" in text
 
 
-def test_generate_eval_md_rating_instructions(tmp_path: Path) -> None:
+def test_generate_judge_prompt_instructions(tmp_path: Path) -> None:
     results = _results()
-    out = tmp_path / "eval_output.md"
-    generate_eval_md(tmp_path, results, out_path=out)
-    text = out.read_text().lower()
-    # The instructions should ask the judge to produce a scores JSON keyed by
-    # config / test_id / repetition.
-    assert "config" in text
-    assert "test_id" in text
-    assert "json" in text
+    out = tmp_path / "judge_prompt.md"
+    generate_judge_prompt(tmp_path, results, out_path=out)
+    text = text = out.read_text().lower()
+    # The instructions should ask the judge for a JSON response
+    assert "recommendation" in text
     assert "scores" in text
+    assert "conclude" in text
+    assert "refine" in text
+    assert "expand" in text
+    assert "json" in text

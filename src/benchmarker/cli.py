@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import shutil
 from pathlib import Path
 
 import click
@@ -11,8 +12,8 @@ from rich.table import Table
 
 from benchmarker.client import LLMClient
 from benchmarker.config import load_params, load_params_default, load_tests, load_tests_default
-from benchmarker.importer import import_scores
 from benchmarker.optimizers import create_optimizer
+from benchmarker.parse_judge import parse_and_act
 from benchmarker.runner import ProgressReporter, Runner, config_key
 
 console = Console()
@@ -24,6 +25,78 @@ def main() -> None:
     """benchmarker - find optimal LLM sampling parameters."""
 
 
+# ------------------------------------------------------------------ #
+#  init                                                               #
+# ------------------------------------------------------------------ #
+@main.command()
+@click.option(
+    "--dir",
+    "target_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Directory to initialise with default config files.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing files.",
+)
+def init(target_dir: Path, force: bool) -> None:
+    """Create default config files (tests.json, params.yaml) in the given directory."""
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    tests_dest = target_dir / "tests.json"
+    params_dest = target_dir / "params.yaml"
+
+    copied = []
+
+    if not tests_dest.exists() or force:
+        suite = load_tests_default()
+        import json
+        tests_dest.write_text(
+            json.dumps([t.model_dump(exclude_none=True) for t in suite.tests], indent=2),
+            encoding="utf-8",
+        )
+        copied.append(tests_dest)
+    else:
+        click.echo(f"  (skip) {tests_dest} already exists — use --force to overwrite.")
+
+    if not params_dest.exists() or force:
+        params = load_params_default()
+        import yaml
+        raw = {
+            "optimizer": {"type": params.optimizer.type, "budget": params.optimizer.budget},
+            "parameters": [
+                {
+                    "name": p.name,
+                    "type": p.type.value,
+                    "low": p.low,
+                    "high": p.high,
+                    "step": p.step,
+                    "choices": p.choices,
+                }
+                for p in params.parameters
+            ],
+            "static_params": params.static_params,
+        }
+        params_dest.write_text(yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8")
+        copied.append(params_dest)
+    else:
+        click.echo(f"  (skip) {params_dest} already exists — use --force to overwrite.")
+
+    if copied:
+        for f in copied:
+            click.echo(f"  created {f}")
+    else:
+        click.echo("  All files already exist. Nothing to do.")
+
+
+# ------------------------------------------------------------------ #
+#  run                                                                #
+# ------------------------------------------------------------------ #
 @main.command()
 @click.option("--model", default="default", show_default=True, help="Model name to benchmark.")
 @click.option(
@@ -54,7 +127,7 @@ def main() -> None:
     default=Path("benchmark_runs/latest"),
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Directory to store raw results and the eval file.",
+    help="Directory to store raw results and the judge prompt file.",
 )
 @click.option(
     "--csv",
@@ -145,68 +218,57 @@ def run(
     if auto_scores:
         _print_auto_eval_summary(results, auto_scores)
         click.echo(f"\nSaved auto-evaluation scores to {run_dir / 'scores_auto.json'}")
-        click.echo("Run `import-scores` with this file to compute combined quality+speed ranking.")
 
     click.echo(f"\nSaved raw results to {run_dir / 'raw_data.json'}")
-    click.echo(f"Saved evaluation file to {run_dir / 'eval_output.md'}")
-    click.echo("Copy that file's content to a judge LLM, then run `import-scores`.")
+    click.echo(f"Saved judge prompt to {run_dir / 'judge_prompt.md'}")
+    click.echo(
+        "\nNext step: copy the contents of judge_prompt.md to your judge LLM,\n"
+        "save the reply as a text file, then run:\n"
+        f"  benchmarker parse <reply_file>"
+    )
 
 
-@main.command(name="import-scores")
-@click.argument("scores_path", type=click.Path(path_type=Path, exists=True))
+# ------------------------------------------------------------------ #
+#  parse                                                              #
+# ------------------------------------------------------------------ #
+@main.command()
+@click.argument("reply_file", type=click.Path(path_type=Path), required=False)
 @click.option(
-    "--run-dir",
-    "run_dir",
-    default=Path("benchmark_runs/latest"),
+    "--params",
+    "params_path",
+    default="params.yaml",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Directory containing raw_data.json from a previous run.",
+    help="Path to the parameter YAML to update when refining.",
 )
-@click.option(
-    "--weight-quality",
-    default=0.5,
-    show_default=True,
-    type=float,
-    help="Weight (0..1) of quality vs speed in the combined score.",
-)
-@click.option(
-    "--csv",
-    "csv_path",
-    default=None,
-    type=click.Path(path_type=Path),
-    help="Optional path to export the ranking as CSV.",
-)
-def import_scores_cmd(
-    scores_path: Path,
-    run_dir: Path,
-    weight_quality: float,
-    csv_path: Path | None,
-) -> None:
-    """Compute the final ranking from a judge SCORES_PATH."""
-    ranking = import_scores(run_dir, scores_path, weight_quality=weight_quality)
+def parse(reply_file: Path | None, params_path: Path) -> None:
+    """Parse the judge's reply and take action (conclude / refine / expand).
 
-    table = Table(title="Final Benchmark Ranking")
-    table.add_column("Config", overflow="fold")
-    table.add_column("Avg Quality", justify="right")
-    table.add_column("Avg Tok/s", justify="right")
-    table.add_column("Combined", justify="right")
-    for item in ranking:
-        table.add_row(
-            item.config,
-            f"{item.avg_quality:.2f}",
-            f"{item.avg_speed:.2f}",
-            f"{item.combined:.3f}",
-        )
-    console.print(table)
+    If REPLY_FILE is provided, read it; otherwise read from stdin.
+    """
+    if reply_file:
+        if not reply_file.exists():
+            click.echo(f"Error: file not found: {reply_file}", err=True)
+            raise SystemExit(1)
+        text = reply_file.read_text(encoding="utf-8")
+        click.echo(f"Read judge reply from {reply_file}")
+    else:
+        click.echo("Reading judge reply from stdin (paste the reply and press Ctrl+D)...")
+        import sys
+        text = sys.stdin.read()
 
-    if csv_path:
-        _write_csv(csv_path, ranking)
-        click.echo(f"Exported ranking CSV to {csv_path}")
+    try:
+        parse_and_act(text, params_path=params_path)
+    except ValueError as exc:
+        click.echo(f"Error parsing judge reply: {exc}", err=True)
+        click.echo("\nRaw text received:", err=True)
+        click.echo(text[:1000], err=True)
+        raise SystemExit(1) from exc
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+#  Helpers                                                            #
+# ------------------------------------------------------------------ #
 class _RichProgress(ProgressReporter):
     def __init__(self) -> None:
         self._progress = Progress(transient=True)
@@ -238,7 +300,6 @@ def _print_speed_table(results: list) -> None:
         reverse=True,
     )[:5]
 
-    # Check if any cost data is non-zero
     has_costs = any(any(c > 0 for c in cv) for cv in costs.values())
 
     table = Table(title="Top Configs by tokens/s (speed only)")
@@ -267,28 +328,8 @@ def _write_speed_csv(path: Path, results: list) -> None:
             writer.writerow([cfg_key, sum(vals) / len(vals)])
 
 
-def _write_csv(path: Path, ranking: list) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["config", "avg_quality", "avg_speed", "norm_quality", "norm_speed", "combined"])
-        for item in ranking:
-            writer.writerow(
-                [
-                    item.config,
-                    item.avg_quality,
-                    item.avg_speed,
-                    item.norm_quality,
-                    item.norm_speed,
-                    item.combined,
-                ]
-            )
-
-
 def _print_auto_eval_summary(results: list, auto_scores: dict) -> None:
     """Print a summary table of auto-evaluation scores grouped by config."""
-    from benchmarker.runner import config_key
-
-    # Aggregate per config
     per_config: dict[str, list[float]] = {}
     for r in results:
         if r.error is not None:
