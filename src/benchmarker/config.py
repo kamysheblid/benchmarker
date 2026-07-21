@@ -81,8 +81,12 @@ class OptimizerConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["bayesian", "grid", "random"] = "bayesian"
+    type: Literal["bayesian", "grid", "random", "baseline_sweep"] = "bayesian"
     budget: PositiveInt = 20
+    # Baseline parameter values for "baseline_sweep" (ablation) studies.
+    # When set, the sweep varies one parameter at a time while holding the
+    # others at these baseline values.
+    baseline: dict[str, Any] = Field(default_factory=dict)
 
 
 class ParamsConfig(BaseModel):

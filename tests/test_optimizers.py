@@ -9,6 +9,7 @@ from benchmarker.config import OptimizerConfig, ParameterSpec, ParameterType
 from benchmarker.optimizers import (
     BaseOptimizer,
     BayesianOptimizer,
+    ControlledOptimizer,
     GridOptimizer,
     RandomOptimizer,
     create_optimizer,
@@ -137,6 +138,63 @@ def test_bayesian_real_optuna_bounds() -> None:
         assert 10 <= s["top_k"] <= 12
         assert s["strategy"] in ("a", "b")
         opt.tell({"tokens_per_sec": 5.0})
+
+
+# --------------------------------------------------------------------------- #
+# Controlled / Ablation
+# --------------------------------------------------------------------------- #
+def test_controlled_requires_baseline() -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=1.0, step=0.5)]
+    opt = ControlledOptimizer(specs, baseline={"top_k": 40})
+    combos = list(iter(opt))
+    # baseline + 3 temperature values (0.0, 0.5, 1.0) = 4
+    assert len(combos) == 4
+    # All combos include the baseline param
+    for c in combos:
+        assert c["top_k"] == 40
+
+
+def test_controlled_varies_one_param_at_a_time() -> None:
+    baseline = {"temperature": 0.6, "top_p": 0.9}
+    specs = [
+        ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=1.0, step=0.5),
+        ParameterSpec(name="top_p", type=ParameterType.FLOAT, low=0.5, high=1.0, step=0.25),
+    ]
+    opt = ControlledOptimizer(specs, baseline=baseline)
+    combos = list(iter(opt))
+    # baseline + 3 temp + 3 top_p = 7
+    assert len(combos) == 7
+
+    # Each non-baseline config differs in exactly one parameter
+    for c in combos[1:]:
+        diffs = sum(1 for k in baseline if c.get(k) != baseline[k])
+        assert diffs == 1, f"{c} differs in {diffs} params, expected 1"
+
+
+def test_controlled_estimated_steps() -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=1.0, step=0.5)]
+    opt = ControlledOptimizer(specs, baseline={"top_k": 40})
+    assert opt.estimated_steps() == 4
+
+
+def test_controlled_stop_iteration() -> None:
+    opt = ControlledOptimizer([], baseline={"x": 1})
+    list(iter(opt))  # drain
+    with pytest.raises(StopIteration):
+        opt.suggest()
+
+
+def test_factory_creates_controlled() -> None:
+    cfg = OptimizerConfig(type="baseline_sweep", baseline={"temperature": 0.6})
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=1.0, step=0.5)]
+    opt = create_optimizer(cfg, specs)
+    assert isinstance(opt, ControlledOptimizer)
+
+
+def test_factory_invalid_type_raises() -> None:
+    with pytest.raises((ValueError, Exception), match="baseline_sweep"):
+        # Pydantic catches the invalid literal_type before the factory runs
+        create_optimizer(OptimizerConfig(type="invalid"), [])
 
 
 # --------------------------------------------------------------------------- #

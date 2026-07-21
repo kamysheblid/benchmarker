@@ -173,6 +173,71 @@ class BayesianOptimizer(BaseOptimizer):
         return self.budget
 
 
+class ControlledOptimizer(BaseOptimizer):
+    """Ablation study: vary one parameter at a time while keeping others fixed.
+
+    Starts with a baseline config, then for each parameter generates configs
+    where only that parameter varies across its range. All other parameters
+    are held at their baseline value. This isolates the effect of each
+    parameter on performance.
+    """
+
+    def __init__(self, parameters: list[ParameterSpec], baseline: dict[str, Any] | None = None) -> None:
+        super().__init__(parameters)
+        self._baseline = dict(baseline or {})
+        self._combos = self._build_ablations()
+        self._index = 0
+
+    def _values_for(self, spec: ParameterSpec) -> list[Any]:
+        """Same value generation logic as GridOptimizer."""
+        if spec.type is not ParameterType.CATEGORICAL and spec.low is not None and spec.low == spec.high:
+            if spec.type is ParameterType.INT:
+                return [int(spec.low)]
+            return [float(spec.low)]
+        if spec.type is ParameterType.CATEGORICAL:
+            return list(spec.choices or [])
+        if spec.step is not None:
+            low, high, step = spec.low, spec.high, spec.step
+            n = int(round((high - low) / step)) + 1
+            seq = [low + i * step for i in range(n)]
+            if seq[-1] < high:
+                seq.append(high)
+            if spec.type is ParameterType.INT:
+                return [int(round(v)) for v in seq]
+            return [float(v) for v in seq]
+        low, high = spec.low, spec.high
+        if spec.type is ParameterType.INT:
+            return list(range(int(low), int(high) + 1))
+        n = 10
+        return [low + (high - low) * i / (n - 1) for i in range(n)]
+
+    def _build_ablations(self) -> list[dict[str, Any]]:
+        """Build ablation configs — one-parameter-at-a-time variations."""
+        configs: list[dict[str, Any]] = []
+        # Include the baseline itself as the reference point
+        if self._baseline:
+            configs.append(dict(self._baseline))
+
+        for spec in self.parameters:
+            values = self._values_for(spec)
+            for val in values:
+                cfg = dict(self._baseline)
+                cfg[spec.name] = val
+                configs.append(cfg)
+
+        return configs
+
+    def suggest(self) -> dict[str, Any]:
+        if self._index >= len(self._combos):
+            raise StopIteration
+        combo = self._combos[self._index]
+        self._index += 1
+        return dict(combo)
+
+    def estimated_steps(self) -> int:
+        return len(self._combos)
+
+
 def create_optimizer(config: OptimizerConfig, parameters: list[ParameterSpec]) -> BaseOptimizer:
     """Factory: build the optimizer described by ``config``."""
     if config.type == "grid":
@@ -181,4 +246,6 @@ def create_optimizer(config: OptimizerConfig, parameters: list[ParameterSpec]) -
         return RandomOptimizer(parameters, budget=config.budget)
     if config.type == "bayesian":
         return BayesianOptimizer(parameters, budget=config.budget)
+    if config.type == "baseline_sweep":
+        return ControlledOptimizer(parameters, baseline=config.baseline)
     raise ValueError(f"Unknown optimizer type: {config.type!r}")
