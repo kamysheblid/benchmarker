@@ -44,6 +44,8 @@ class RunResult(BaseModel):
     cost_per_1m_input: float = 0.0
     cost_per_1m_output: float = 0.0
     config_aborted: bool = False
+    success_rate: float | None = None
+    coverage: float | None = None
 
     @property
     def cost_estimate(self) -> float:
@@ -203,12 +205,25 @@ class Runner:
                     self._config_attempts[ckt] = self._config_attempts.get(ckt, 0) + 1
                     if result.error is not None:
                         self._config_failures[ckt] = self._config_failures.get(ckt, 0) + 1
+                    logger.info(
+                        "repeat result: test=%s rep=%d status=%s error=%s",
+                        test.id,
+                        rep,
+                        "success" if result.error is None else "failure",
+                        result.error or "none",
+                    )
                     if (
                         self._config_attempts[ckt] >= 2
                         and self._config_failures.get(ckt, 0) / self._config_attempts[ckt] > 0.8
                     ):
                         result.config_aborted = True
                         config_aborted = True
+                        logger.info(
+                            "circuit breaker tripped for config %s after %d attempts (%d failures)",
+                            ckt,
+                            self._config_attempts[ckt],
+                            self._config_failures.get(ckt, 0),
+                        )
                         break
                     self.progress.advance()
 
@@ -219,6 +234,9 @@ class Runner:
             successful_test_ids = {r.test_id for r in config_results if r.error is None}
             total_tests = len(self.test_suite.tests)
             coverage = len(successful_test_ids) / total_tests if total_tests > 0 else 0.0
+            for r in config_results:
+                r.success_rate = success_rate
+                r.coverage = coverage
             penalized_speed = avg_speed * success_rate
             self.optimizer.tell({
                 "tokens_per_sec": penalized_speed,

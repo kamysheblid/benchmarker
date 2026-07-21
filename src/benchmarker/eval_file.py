@@ -200,10 +200,10 @@ def generate_judge_prompt(
     # ---------- Config Summary table ----------
     sections.append("## Config Summary\n")
     sections.append(
-        "| Config ID | Parameters | Avg Tok/s | Avg TTFT (s) | Avg Total (s) | Errors |"
+        "| Config ID | Parameters | Avg Tok/s | Avg TTFT (s) | Avg Total (s) | Errors | Success Rate | Coverage |"
     )
     sections.append(
-        "|-----------|------------|-----------|--------------|---------------|--------|"
+        "|-----------|------------|-----------|--------------|---------------|--------|--------------|----------|"
     )
     for key, items in sorted(filtered_grouped.items()):
         sid = key_to_short[key]
@@ -215,9 +215,14 @@ def generate_judge_prompt(
         avg_speed = sum(speeds) / len(speeds) if speeds else 0.0
         avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
         avg_total = sum(totals) / len(totals) if totals else 0.0
+        # Config-level success_rate and coverage are the same for all results in this config
+        success_rate = items[0].success_rate if items else None
+        coverage = items[0].coverage if items else None
+        success_rate_str = f"{success_rate:.2f}" if success_rate is not None else "N/A"
+        coverage_str = f"{coverage:.2f}" if coverage is not None else "N/A"
         sections.append(
             f"| `{sid}` | `{desc}` | {avg_speed:.1f} | {avg_ttft:.3f} "
-            f"| {avg_total:.3f} | {errs} |"
+            f"| {avg_total:.3f} | {errs} | {success_rate_str} | {coverage_str} |"
         )
     sections.append("")
 

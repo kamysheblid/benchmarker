@@ -675,3 +675,122 @@ def test_build_refinement_hint_skips_non_numeric() -> None:
     hint = _build_refinement_hint({"strategy": "a", "temp": 0.5}, step=1.0)
     assert "strategy" not in hint
     assert hint["temp"] == [-0.5, 1.5]
+
+
+# --------------------------------------------------------------------------- #
+# 3.1 Per-repeat observable status logging
+# --------------------------------------------------------------------------- #
+async def test_runner_logs_per_repeat_status(tmp_path: Path, caplog) -> None:
+    """Each repeat should emit a log line showing success or failure."""
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _FakeClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+    )
+    with caplog.at_level("INFO", logger="benchmarker.runner"):
+        await runner.run()
+    # One log per repeat (1 repeat here)
+    assert any("repeat" in rec.message.lower() for rec in caplog.records)
+    assert any("success" in rec.message.lower() for rec in caplog.records)
+
+
+async def test_runner_logs_repeat_failure(tmp_path: Path, caplog) -> None:
+    """A failing repeat should log the failure."""
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+
+    class _AlwaysFails:
+        async def complete(self, messages, model, **params):
+            raise LLMClientError("boom")
+
+    runner = Runner(
+        _AlwaysFails(),
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=0,
+    )
+    with caplog.at_level("INFO", logger="benchmarker.runner"):
+        await runner.run()
+    assert any("failure" in rec.message.lower() for rec in caplog.records)
+    assert any("boom" in rec.message for rec in caplog.records)
+
+
+async def test_runner_logs_circuit_breaker_trip(tmp_path: Path, caplog) -> None:
+    """When the circuit breaker trips, it should be logged."""
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+
+    class _AlwaysFails:
+        async def complete(self, messages, model, **params):
+            raise TransientError("always")
+
+    runner = Runner(
+        _AlwaysFails(),
+        TestSuite(tests=[
+            TestCase(id="t1", prompt="x", repeat=2),
+            TestCase(id="t2", prompt="y", repeat=1),
+        ]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=0,
+    )
+    with caplog.at_level("INFO", logger="benchmarker.runner"):
+        await runner.run()
+    assert any("circuit breaker" in rec.message.lower() for rec in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# 3.2 Config-level success_rate and coverage in RunResult
+# --------------------------------------------------------------------------- #
+async def test_runresult_stores_success_rate_and_coverage(tmp_path: Path) -> None:
+    """RunResult should accept and persist config-level success_rate and coverage."""
+    result = RunResult(
+        config={"temperature": 0.7},
+        test_id="t1",
+        repetition=1,
+        prompt="hi",
+        response_text="hello",
+        ttft=0.1,
+        total_time=0.5,
+        tokens_per_sec=10.0,
+        completion_tokens=2,
+        prompt_tokens=3,
+        success_rate=0.8,
+        coverage=1.0,
+    )
+    assert result.success_rate == 0.8
+    assert result.coverage == 1.0
+    # Must be serializable
+    dumped = result.model_dump()
+    assert dumped["success_rate"] == 0.8
+    assert dumped["coverage"] == 1.0
+
+
+async def test_runner_sets_success_rate_and_coverage_on_results(tmp_path: Path) -> None:
+    """After a config completes, every result in that config should carry the metrics."""
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _FakeClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x"), TestCase(id="t2", prompt="y")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+    )
+    results, _ = await runner.run()
+    # 1 config x 2 tests = 2 results
+    assert len(results) == 2
+    for r in results:
+        assert r.success_rate is not None
+        assert r.coverage is not None
+        assert 0.0 <= r.success_rate <= 1.0
+        assert 0.0 <= r.coverage <= 1.0
