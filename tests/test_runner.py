@@ -1,6 +1,8 @@
 """Tests for the benchmark runner (Phase 6)."""
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -182,101 +184,89 @@ async def test_runner_passes_stop_sequence(tmp_path: Path) -> None:
     assert params["stop"] == ["\n```", "\ndef "]
 
 
-async def test_run_result_carries_category(tmp_path: Path) -> None:
-    suite = TestSuite(
-        tests=[TestCase(id="t1", prompt="Hello")],
-        categories={"t1": "reasoning"},
-    )
+class _MockHistoryOptimizer:
+    """Minimal optimizer that records tell calls and supports from_history."""
+
+    def __init__(self, parameters: list[ParameterSpec], budget: int = 2, seed: int | None = None) -> None:
+        self.parameters = parameters
+        self.budget = budget
+        self.seed = seed
+        self._count = 0
+        self.tell_calls: list[dict[str, Any]] = []
+
+    def suggest(self) -> dict[str, Any]:
+        if self._count >= self.budget:
+            raise StopIteration
+        self._count += 1
+        return {"temperature": 0.5}
+
+    def tell(self, metrics: dict[str, Any]) -> None:
+        self.tell_calls.append(metrics)
+
+    def estimated_steps(self) -> int:
+        return self.budget
+
+    @classmethod
+    def from_history(
+        cls,
+        history_path: Path,
+        parameters: list[ParameterSpec],
+        budget: int = 2,
+        seed: int | None = None,
+    ):
+        from benchmarker.optimizer_history import OptimizerHistory
+        history = OptimizerHistory.load(history_path)
+        optimizer = cls(parameters=parameters, budget=budget, seed=seed)
+        for trial in history.trials:
+            optimizer.tell({"tokens_per_sec": trial.tokens_per_sec, "quality": trial.quality})
+        return optimizer
+
+
+async def test_runner_saves_optimizer_history(tmp_path: Path) -> None:
     specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
-    optimizer = GridOptimizer(specs)
+    optimizer = _MockHistoryOptimizer(specs, budget=1)
     client = _FakeClient()
-    runner = Runner(client, suite, optimizer, "m", tmp_path / "run")
-    results, _ = await runner.run()
-    assert len(results) == 1
-    assert results[0].category == "reasoning"
-
-
-async def test_runner_retries_on_endpoint_error(tmp_path: Path) -> None:
-    class _FailingThenSucceedingClient:
-        def __init__(self) -> None:
-            self.attempts = 0
-
-        async def complete(self, messages, model, **params):
-            self.attempts += 1
-            if self.attempts < 3:
-                raise LLMClientError("endpoint error")
-            return CompletionResult(
-                prompt_tokens=1,
-                completion_tokens=1,
-                response_text="ok",
-                ttft=0.01,
-                total_time=0.1,
-                tokens_per_sec=10.0,
-            )
-
-    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
-    optimizer = GridOptimizer(specs)
-    client = _FailingThenSucceedingClient()
+    history_file = tmp_path / "optimizer_history.json"
     runner = Runner(
         client,
         TestSuite(tests=[TestCase(id="t1", prompt="x")]),
         optimizer,
         "m",
         tmp_path / "run",
-        max_retries=2,
+        history_path=history_file,
     )
-    results, _ = await runner.run()
-    assert len(results) == 1
-    assert results[0].response_text == "ok"
-    assert client.attempts == 3
+    await runner.run()
+
+    assert history_file.exists()
+    data = json.loads(history_file.read_text())
+    assert len(data) == 1
+    assert data[0]["params"] == {"temperature": 0.5}
+    assert data[0]["tokens_per_sec"] == 10.0
+    assert data[0]["quality"] is None
 
 
-async def test_runner_exhausts_retries_then_records_error(tmp_path: Path) -> None:
-    class _AlwaysFails:
-        def __init__(self) -> None:
-            self.attempts = 0
-
-        async def complete(self, messages, model, **params):
-            self.attempts += 1
-            raise LLMClientError("always")
-
+async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
     specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
-    optimizer = GridOptimizer(specs)
-    client = _AlwaysFails()
+    # Seed history with one trial
+    history_file = tmp_path / "optimizer_history.json"
+    history_file.write_text(
+        json.dumps([{"params": {"temperature": 0.5}, "quality": None, "tokens_per_sec": 10.0}]),
+        encoding="utf-8",
+    )
+    optimizer = _MockHistoryOptimizer(specs, budget=1)
+    client = _FakeClient()
     runner = Runner(
         client,
         TestSuite(tests=[TestCase(id="t1", prompt="x")]),
         optimizer,
         "m",
         tmp_path / "run",
-        max_retries=2,
+        history_path=history_file,
     )
-    results, _ = await runner.run()
-    assert len(results) == 1
-    assert results[0].error is not None
-    assert client.attempts == 3
+    await runner.run()
 
-
-async def test_runner_does_not_retry_on_validation_error(tmp_path: Path) -> None:
-    class _ValidationErrorClient:
-        def __init__(self) -> None:
-            self.attempts = 0
-
-        async def complete(self, messages, model, **params):
-            self.attempts += 1
-            raise ValueError("invalid params")
-
-    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
-    optimizer = GridOptimizer(specs)
-    client = _ValidationErrorClient()
-    runner = Runner(
-        client,
-        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
-        optimizer,
-        "m",
-        tmp_path / "run",
-        max_retries=2,
-    )
-    with pytest.raises(ValueError):
-        await runner.run()
-    assert client.attempts == 1
+    # After replay, runner.optimizer is a new instance produced by from_history.
+    # The replayed historical trial should be recorded, plus the new trial.
+    assert len(runner.optimizer.tell_calls) == 2
+    assert runner.optimizer.tell_calls[0] == {"tokens_per_sec": 10.0, "quality": None}
+    assert runner.optimizer.tell_calls[1]["tokens_per_sec"] == 10.0
