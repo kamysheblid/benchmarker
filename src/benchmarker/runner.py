@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from benchmarker.client import LLMClientError
 from benchmarker.config import TestSuite
 from benchmarker.eval_file import JUDGE_PROMPT_FILE, generate_judge_prompt
 from benchmarker.optimizers import BaseOptimizer
+from benchmarker.param_validation import validate_sampling_params
 
 RAW_DATA_FILE = "raw_data.json"
 AUTO_EVAL_FILE = "scores_auto.json"
@@ -73,7 +75,7 @@ class Runner:
         optimizer: BaseOptimizer,
         model_name: str,
         run_dir: Path,
-        max_retries: int = 1,
+        max_retries: int = 2,
         progress: ProgressReporter | None = None,
         static_params: dict[str, Any] | None = None,
         auto_eval: bool = False,
@@ -154,8 +156,10 @@ class Runner:
         if test.stop is not None:
             params["stop"] = test.stop
 
+        validate_sampling_params(params)
+
         last_error: str | None = None
-        for _ in range(self.max_retries + 1):
+        for attempt in range(self.max_retries + 1):
             try:
                 completion = await self.client.complete(
                     messages=messages, model=self.model_name, **params
@@ -177,6 +181,8 @@ class Runner:
                 )
             except LLMClientError as exc:
                 last_error = str(exc)
+                if attempt < self.max_retries:
+                    await asyncio.sleep(attempt + 1)
         # all retries exhausted -> record failure
         return RunResult(
             config=config,
