@@ -15,6 +15,7 @@ import optuna
 from optuna import Study
 
 from benchmarker.config import OptimizerConfig, ParameterSpec, ParameterType
+from benchmarker.optimizer_history import OptimizerHistory
 
 
 class BaseOptimizer(ABC):
@@ -139,6 +140,7 @@ class BayesianOptimizer(BaseOptimizer):
         self.budget = budget
         self._count = 0
         self._last_trial: optuna.trial.Trial | None = None
+        self.seed = seed
         self.study = study or optuna.create_study(direction=direction, sampler=optuna.samplers.RandomSampler(seed=seed))
 
     def suggest(self) -> dict[str, Any]:
@@ -161,16 +163,34 @@ class BayesianOptimizer(BaseOptimizer):
     def tell(self, metrics: dict[str, Any]) -> None:
         if self._last_trial is None:
             return
-        value = metrics.get("tokens_per_sec")
-        if value is None:
-            # mark as failed trial
+        tokens_per_sec = metrics.get("tokens_per_sec")
+        quality = metrics.get("quality")
+        if tokens_per_sec is None and quality is None:
             self.study.tell(self._last_trial, state=optuna.trial.TrialState.FAIL)
         else:
-            self.study.tell(self._last_trial, float(value))
+            value = float(tokens_per_sec) if tokens_per_sec is not None else float(quality)
+            self.study.tell(self._last_trial, value)
         self._last_trial = None
 
     def estimated_steps(self) -> int:
         return self.budget
+
+    @classmethod
+    def from_history(
+        cls,
+        history_path: Path,
+        parameters: list[ParameterSpec],
+        budget: int = 20,
+        seed: int | None = None,
+    ) -> BayesianOptimizer:
+        history = OptimizerHistory.load(history_path)
+        optimizer = cls(parameters=parameters, budget=budget, seed=seed)
+        for trial in history.trials:
+            optimizer.tell({
+                "tokens_per_sec": trial.tokens_per_sec,
+                "quality": trial.quality,
+            })
+        return optimizer
 
 
 class ControlledOptimizer(BaseOptimizer):
