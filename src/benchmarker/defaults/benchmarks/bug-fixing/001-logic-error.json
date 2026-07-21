@@ -1,0 +1,7 @@
+{
+  "id": "bugfixing",
+  "prompt": "You are a debugging assistant. Explain the bug in the following code, then provide the corrected version. Start with a brief explanation, then output only the fixed function code.\n\nBroken code:\ndef calculate_average(numbers):\n    total = 0\n    for i in range(len(numbers)):\n        if i == 0:\n            total = numbers[i]\n        else:\n            total = total + numbers[i]\n    return total / len(numbers) if len(numbers) > 0 else 0\n\nHint: There is a subtle logic error. What happens with the first element?",
+  "max_tokens": 2048,
+  "repeat": 5,
+  "reasoning": true
+}
