@@ -33,6 +33,7 @@ class RunResult(BaseModel):
     completion_tokens: int
     prompt_tokens: int
     error: str | None = None
+    category: str | None = None
     # Pricing in USD per 1M tokens (set globally via CLI).
     cost_per_1m_input: float = 0.0
     cost_per_1m_output: float = 0.0
@@ -127,7 +128,6 @@ class Runner:
             self._save(results)
         self.progress.finish()
 
-        self._save(results)
         judge_path = self.run_dir / JUDGE_PROMPT_FILE
         generate_judge_prompt(self.run_dir, results, out_path=judge_path)
         # config_map.json is written alongside the judge prompt by generate_judge_prompt
@@ -172,6 +172,7 @@ class Runner:
                     completion_tokens=completion.completion_tokens,
                     prompt_tokens=completion.prompt_tokens,
                     error=None,
+                    category=self.test_suite.categories.get(test.id),
                     cost_per_1m_input=self.cost_per_1m_input,
                     cost_per_1m_output=self.cost_per_1m_output,
                 )
@@ -190,6 +191,7 @@ class Runner:
             completion_tokens=0,
             prompt_tokens=0,
             error=last_error,
+            category=self.test_suite.categories.get(test.id),
             cost_per_1m_input=self.cost_per_1m_input,
             cost_per_1m_output=self.cost_per_1m_output,
         )

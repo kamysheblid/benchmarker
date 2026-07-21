@@ -50,16 +50,18 @@ def _make_short_ids(
     return key_to_short, short_to_key
 
 
-# ------------------------------------------------------------------ #
-#  Judge instruction template (IMPROVED - per-task scoring, 0-100)   #
-# ------------------------------------------------------------------ #
-_JUDGE_INSTRUCTIONS = """\
+def _build_judge_instructions(categories: list[str]) -> str:
+    """Build judge instructions dynamically based on discovered categories."""
+    cat_list = categories if categories else ["per-category"]
+    cat_bullets = "\n".join(f"- `{c}`" for c in cat_list)
+
+    return f"""\
 ---
 
 ## Judge Instructions
 
 You are an expert evaluator of code-generation quality. For each **Config**
-section above, assess the quality of **all responses** across all tests.
+section above, assess the quality of **successful responses** across all tests.
 
 ### Scoring (0–100)
 
@@ -70,16 +72,13 @@ section above, assess the quality of **all responses** across all tests.
   - **Failure rate** – if many tests failed (errors), penalise the config,
     but if the few successful ones are excellent, you may still give a moderate score.
 
-Additionally, provide **per-task scores (0–100)** for each of the following
-task categories (if present):
-- `coding_chunk`
-- `algorithmic` (includes palindrome, two_sum, BST)
-- `bugfixing`
-- `refactoring`
-- `integration_api`
-- `test_generation`
+Additionally, provide **per-category scores (0–100)** for each of the following
+categories (if present):
+{cat_bullets}
 
 For categories where all runs failed, give a score of `0`.
+
+If a request resulted in an **endpoint error** (shown as `ERROR: Request to LLM endpoint failed`), treat that run as a **failure** and penalise the configuration accordingly. However, for successful responses, evaluate only the quality of the content. Do not let error messages distract you from evaluating the content of successful runs.
 
 ### Recommendation
 
@@ -91,15 +90,15 @@ Based on the scores, decide on the **next experimental step**:
 - `"refine"` – a specific parameter region shows promise (e.g., low temperature,
   specific top_p), but you need a finer grid around it.
   (Provide a `refinement_hint` with tighter ranges, e.g.,
-  `{"temperature": [0.1, 0.3]}`.)
+  {{"temperature": [0.1, 0.3]}}.)
 - `"expand"` – results are inconclusive because most configs failed or performed
   poorly. You need to **broaden the search** (e.g., wider ranges for temperature,
   top_p, or add new parameters like `repeat_penalty`).
   (Provide a hint suggesting which parameters to expand, e.g.,
-  `{"temperature": [0.0, 2.0], "top_p": [0.0, 1.0]}`.)
+  {{"temperature": [0.0, 2.0], "top_p": [0.0, 1.0]}}.)
 
-If some tasks have very different optimal parameters, mention that in the
-`reasoning` field and optionally include a `best_config_per_task` mapping.
+If some categories have very different optimal parameters, mention that in the
+`reasoning` field and optionally include a `best_config_per_category` mapping.
 
 ### Output Format
 
@@ -107,29 +106,25 @@ At the **very end** of your reply, output **only** a JSON object with these
 fields:
 
 ```json
-{
-  "scores": {
-    "config_1": { "overall": 45, "per_task": {"bugfixing": 70, "coding_chunk": 0, ...} },
-    "config_2": { "overall": 12, "per_task": {...} },
+{{
+  "scores": {{
+    "config_1": {{ "overall": 85, "per_category": {{"code-generation": 90, "bug-fixing": 70}} }},
+    "config_2": {{ "overall": 12, "per_category": {{...}} }},
     ...
-  },
-  "recommendation": "refine",
-  "confidence": "medium",
-  "reasoning": "Config 5 shows promise for bugfixing, but coding tasks failed. Need to narrow temperature and top_p.",
-  "refinement_hint": { "temperature": [0.1, 0.3], "top_p": [0.3, 0.5] },
-  "best_config_per_task": {
-    "bugfixing": "config_5",
-    "coding_chunk": null
-  }
-}
+  }},
+  "recommendation": "conclude",
+  "confidence": "high",
+  "reasoning": "...",
+  "best_config_per_category": {{"code-generation": "config_1", "bug-fixing": "config_2"}}
+}}
 ```
 
-- **`scores`** – required, with `overall` and optionally `per_task`.
+- **`scores`** – required, with `overall` and optionally `per_category`.
 - **`recommendation`** – one of `"conclude"`, `"refine"`, `"expand"`.
 - **`refinement_hint`** – only if `recommendation` is `"refine"` or `"expand"`.
   For `"expand"`, provide **wider** ranges than the current ones.
-- **`best_config_per_task`** – optional, maps task name to the config ID that
-  performed best for that task (or `null` if none).
+- **`best_config_per_category`** – optional, maps category name to the config ID that
+  performed best for that category (or `null` if none).
 
 **Important:** Output **only** the JSON block – nothing before or after it.
 Do NOT wrap the JSON in markdown code fences in your actual reply
@@ -159,6 +154,9 @@ def generate_judge_prompt(
 
     run_dir = Path(run_dir)
     out_path = out_path or (run_dir / JUDGE_PROMPT_FILE)
+
+    # Derive category list from run data
+    categories = sorted({r.category for r in run_results if r.category})
 
     # Group by config key
     grouped: dict[str, list[Any]] = {}
@@ -223,18 +221,47 @@ def generate_judge_prompt(
         )
     sections.append("")
 
-    # ---------- Detailed Responses ----------
+    # ---------- Detailed Responses (grouped by config, then category) ----------
     for key, items in sorted(filtered_grouped.items()):
         sid = key_to_short[key]
         desc = _short_desc(key)
+        successful = [r for r in items if r.error is None]
+        errored = [r for r in items if r.error is not None]
+
         sections.append(f"\n## Config `{sid}` — {desc} ({len(items)} runs)\n")
-        for r in items:
-            rlabel = f"Repetition {r.repetition}" if r.repetition > 1 else "Run 1"
-            sections.append(f"### Test `{r.test_id}` — {rlabel}\n")
-            sections.append(_render_result(r))
+
+        if errored:
+            sections.append(
+                f"*{len(errored)} runs failed with endpoint errors "
+                f"(excluded from quality evaluation)*\n"
+            )
+
+        if not successful:
+            continue
+
+        # Group successful runs by category
+        by_category: dict[str, list[Any]] = {}
+        for r in successful:
+            cat = r.category or "general"
+            by_category.setdefault(cat, []).append(r)
+
+        for cat, cat_items in sorted(by_category.items()):
+            sections.append(f"\n### Category: `{cat}` ({len(cat_items)} runs)\n")
+            avg_speed = sum(r.tokens_per_sec for r in cat_items) / len(cat_items)
+            sections.append(
+                f"*Summary — count: {len(cat_items)}, "
+                f"avg tokens_per_sec: {avg_speed:.2f}*\n"
+            )
+            for r in cat_items:
+                preview = r.response_text[:200]
+                if len(r.response_text) > 200:
+                    preview += "..."
+                sections.append(
+                    f"- **`{r.test_id}`** (rep {r.repetition}): {preview}\n"
+                )
 
     body = "\n".join(sections)
-    content = body + "\n\n" + _JUDGE_INSTRUCTIONS
+    content = body + "\n\n" + _build_judge_instructions(categories)
     out_path.write_text(content, encoding="utf-8")
 
     # ---------- Save config map ----------
