@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class OptimizerTrial:
     params: dict[str, Any]
     quality: float | None = None
     tokens_per_sec: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class OptimizerHistory:
@@ -38,6 +39,7 @@ class OptimizerHistory:
                 "params": trial.params,
                 "quality": trial.quality,
                 "tokens_per_sec": trial.tokens_per_sec,
+                "metadata": trial.metadata,
             }
             for trial in self.trials
         ]
@@ -57,6 +59,7 @@ class OptimizerHistory:
                 params=item.get("params", {}),
                 quality=item.get("quality"),
                 tokens_per_sec=item.get("tokens_per_sec"),
+                metadata=item.get("metadata", {}),
             )
             for item in raw
         ]

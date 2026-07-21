@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from benchmarker.client import CompletionResult, LLMClientError
+from benchmarker.client import ClientError, CompletionResult, LLMClientError, ServerError, TransientError
 from benchmarker.config import OptimizerConfig, ParameterSpec, ParameterType, TestCase, TestSuite
 from benchmarker.optimizers import BayesianOptimizer, GridOptimizer, create_optimizer
 from benchmarker.runner import RunResult, Runner
@@ -270,3 +270,222 @@ async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
     assert len(runner.optimizer.tell_calls) == 2
     assert runner.optimizer.tell_calls[0] == {"tokens_per_sec": 10.0, "quality": None}
     assert runner.optimizer.tell_calls[1]["tokens_per_sec"] == 10.0
+
+
+# --------------------------------------------------------------------------- #
+# 1.2 Adaptive retry tuning
+# --------------------------------------------------------------------------- #
+class _TransientAfterRetries:
+    """Fail twice, then succeed."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def complete(self, messages, model, **params):
+        self.attempts += 1
+        if self.attempts <= 2:
+            raise TransientError("transient boom")
+        return CompletionResult(
+            prompt_tokens=1, completion_tokens=1, response_text="ok",
+            ttft=0.01, total_time=0.1, tokens_per_sec=10.0,
+        )
+
+
+async def test_runner_retries_transient_with_linear_backoff(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _TransientAfterRetries()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=3,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].response_text == "ok"
+    assert client.attempts == 3  # initial + 2 retries
+
+
+class _AlwaysClientError:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def complete(self, messages, model, **params):
+        self.attempts += 1
+        raise ClientError("400 bad")
+
+
+async def test_runner_fails_fast_on_client_error(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _AlwaysClientError()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=3,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert client.attempts == 1  # fail fast, no retries
+
+
+class _ServerErrorThenSuccess:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def complete(self, messages, model, **params):
+        self.attempts += 1
+        if self.attempts == 1:
+            raise ServerError("500 boom")
+        return CompletionResult(
+            prompt_tokens=1, completion_tokens=1, response_text="ok",
+            ttft=0.01, total_time=0.1, tokens_per_sec=10.0,
+        )
+
+
+async def test_runner_retries_server_error_with_exponential_backoff(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _ServerErrorThenSuccess()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=2,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].response_text == "ok"
+    assert client.attempts == 2
+
+
+# --------------------------------------------------------------------------- #
+# 1.3 Success-rate aware tell
+# --------------------------------------------------------------------------- #
+async def test_runner_computes_success_rate_and_coverage(tmp_path: Path) -> None:
+    class _MixedClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, model, **params):
+            self.calls += 1
+            if self.calls % 2 == 0:
+                raise TransientError("boom")
+            return CompletionResult(
+                prompt_tokens=1, completion_tokens=1, response_text="ok",
+                ttft=0.01, total_time=0.1, tokens_per_sec=10.0,
+            )
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _MixedClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=1,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].error is None
+
+
+async def test_runner_tell_includes_success_rate_and_coverage(tmp_path: Path) -> None:
+    class _RecordingOptimizer:
+        def __init__(self) -> None:
+            self.tell_calls: list[dict[str, Any]] = []
+            self.parameters = []
+            self._count = 0
+
+        def suggest(self) -> dict[str, Any]:
+            if self._count >= 1:
+                raise StopIteration
+            self._count += 1
+            return {"temperature": 0.5}
+
+        def tell(self, metrics: dict[str, Any]) -> None:
+            self.tell_calls.append(metrics)
+
+        def estimated_steps(self) -> int:
+            return 1
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = _RecordingOptimizer()
+    client = _FakeClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+    )
+    await runner.run()
+    assert len(optimizer.tell_calls) == 1
+    metrics = optimizer.tell_calls[0]
+    assert "tokens_per_sec" in metrics
+    assert "success_rate" in metrics
+    assert "coverage" in metrics
+
+
+# --------------------------------------------------------------------------- #
+# 1.4 Circuit breaker
+# --------------------------------------------------------------------------- #
+async def test_runner_circuit_breaker_trips_on_high_failure_rate(tmp_path: Path) -> None:
+    class _AlwaysFails:
+        async def complete(self, messages, model, **params):
+            raise TransientError("always")
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _AlwaysFails()
+    runner = Runner(
+        client,
+        TestSuite(tests=[
+            TestCase(id="t1", prompt="x", repeat=2),
+            TestCase(id="t2", prompt="y", repeat=2),
+        ]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=0,
+    )
+    results, _ = await runner.run()
+    # t1 repeat=2 -> 2 attempts, both fail -> trip breaker -> t2 skipped
+    # We should see 2 results for t1 (reps 1 and 2), none for t2
+    t1_results = [r for r in results if r.test_id == "t1"]
+    t2_results = [r for r in results if r.test_id == "t2"]
+    assert len(t1_results) == 2
+    assert len(t2_results) == 0  # skipped after circuit breaker
+
+
+async def test_runner_circuit_breaker_sets_config_aborted_flag(tmp_path: Path) -> None:
+    class _AlwaysFails:
+        async def complete(self, messages, model, **params):
+            raise TransientError("always")
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _AlwaysFails()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x", repeat=2)]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=0,
+    )
+    results, _ = await runner.run()
+    # After circuit breaker trips, the second rep should have config_aborted
+    assert results[1].config_aborted is True
+    assert results[0].config_aborted is not True  # first attempt before trip

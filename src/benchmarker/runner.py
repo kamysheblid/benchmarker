@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
 
-from benchmarker.client import LLMClientError
+from benchmarker.client import ClientError, LLMClientError, ServerError, TransientError
 from benchmarker.config import TestSuite
 from benchmarker.eval_file import JUDGE_PROMPT_FILE, generate_judge_prompt
 from benchmarker.optimizer_history import OptimizerHistory, OptimizerTrial
@@ -41,9 +41,9 @@ class RunResult(BaseModel):
     prompt_tokens: int
     error: str | None = None
     category: str | None = None
-    # Pricing in USD per 1M tokens (set globally via CLI).
     cost_per_1m_input: float = 0.0
     cost_per_1m_output: float = 0.0
+    config_aborted: bool = False
 
     @property
     def cost_estimate(self) -> float:
@@ -103,6 +103,8 @@ class Runner:
         self.cost_per_1m_output = cost_per_1m_output
         self.history_path = history_path
         self._history: list[OptimizerTrial] = []
+        self._config_failures: dict[str, int] = {}
+        self._config_attempts: dict[str, int] = {}
 
     async def run(self) -> tuple[list[RunResult], dict[str, Any] | None]:
         """Execute the full benchmark, returning and persisting all results.
@@ -134,16 +136,47 @@ class Runner:
                 break
 
             config_results: list[RunResult] = []
+            ckt = config_key(config)
+            config_aborted = False
             for test in self.test_suite.tests:
+                if config_aborted:
+                    break
                 for rep in range(1, test.repeat + 1):
                     result = await self._run_one(config, test, rep)
                     results.append(result)
                     config_results.append(result)
+                    self._config_attempts[ckt] = self._config_attempts.get(ckt, 0) + 1
+                    if result.error is not None:
+                        self._config_failures[ckt] = self._config_failures.get(ckt, 0) + 1
+                    if (
+                        self._config_attempts[ckt] >= 2
+                        and self._config_failures.get(ckt, 0) / self._config_attempts[ckt] > 0.8
+                    ):
+                        result.config_aborted = True
+                        config_aborted = True
+                        break
                     self.progress.advance()
 
             avg_speed = self._avg_speed(config_results)
-            self.optimizer.tell({"tokens_per_sec": avg_speed})
-            self._history.append(OptimizerTrial(params=config, tokens_per_sec=avg_speed))
+            successful_runs = sum(1 for r in config_results if r.error is None)
+            total_runs = len(config_results)
+            success_rate = successful_runs / total_runs if total_runs > 0 else 0.0
+            successful_test_ids = {r.test_id for r in config_results if r.error is None}
+            total_tests = len(self.test_suite.tests)
+            coverage = len(successful_test_ids) / total_tests if total_tests > 0 else 0.0
+            penalized_speed = avg_speed * success_rate
+            self.optimizer.tell({
+                "tokens_per_sec": penalized_speed,
+                "success_rate": success_rate,
+                "coverage": coverage,
+            })
+            self._history.append(
+                OptimizerTrial(
+                    params=config,
+                    tokens_per_sec=avg_speed,
+                    metadata={"success_rate": success_rate, "coverage": coverage},
+                )
+            )
             trial_index += 1
             self._save(results)
             self._save_history()
@@ -203,8 +236,13 @@ class Runner:
                 )
             except LLMClientError as exc:
                 last_error = str(exc)
+                if isinstance(exc, ClientError):
+                    break  # fail fast
                 if attempt < self.max_retries:
-                    await asyncio.sleep(attempt + 1)
+                    if isinstance(exc, ServerError):
+                        await asyncio.sleep(2**attempt)  # exponential backoff
+                    else:
+                        await asyncio.sleep(attempt + 1)  # linear backoff
         # all retries exhausted -> record failure
         return RunResult(
             config=config,
