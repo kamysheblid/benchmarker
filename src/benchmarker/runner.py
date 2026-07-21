@@ -33,6 +33,16 @@ class RunResult(BaseModel):
     completion_tokens: int
     prompt_tokens: int
     error: str | None = None
+    # Pricing in USD per 1M tokens (set globally via CLI).
+    cost_per_1m_input: float = 0.0
+    cost_per_1m_output: float = 0.0
+
+    @property
+    def cost_estimate(self) -> float:
+        """Estimated USD cost for this single request."""
+        input_cost = (self.prompt_tokens / 1_000_000) * self.cost_per_1m_input
+        output_cost = (self.completion_tokens / 1_000_000) * self.cost_per_1m_output
+        return round(input_cost + output_cost, 8)
 
 
 def config_key(config: dict[str, Any]) -> str:
@@ -67,6 +77,8 @@ class Runner:
         progress: ProgressReporter | None = None,
         static_params: dict[str, Any] | None = None,
         auto_eval: bool = False,
+        cost_per_1m_input: float = 0.0,
+        cost_per_1m_output: float = 0.0,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -78,6 +90,8 @@ class Runner:
         # Fixed params merged into every request (e.g. enable_thinking:false).
         self.static_params = dict(static_params or {})
         self.auto_eval = auto_eval
+        self.cost_per_1m_input = cost_per_1m_input
+        self.cost_per_1m_output = cost_per_1m_output
 
     async def run(self) -> tuple[list[RunResult], dict[str, Any] | None]:
         """Execute the full benchmark, returning and persisting all results.
@@ -157,6 +171,8 @@ class Runner:
                     completion_tokens=completion.completion_tokens,
                     prompt_tokens=completion.prompt_tokens,
                     error=None,
+                    cost_per_1m_input=self.cost_per_1m_input,
+                    cost_per_1m_output=self.cost_per_1m_output,
                 )
             except LLMClientError as exc:
                 last_error = str(exc)
@@ -173,6 +189,8 @@ class Runner:
             completion_tokens=0,
             prompt_tokens=0,
             error=last_error,
+            cost_per_1m_input=self.cost_per_1m_input,
+            cost_per_1m_output=self.cost_per_1m_output,
         )
 
     @staticmethod

@@ -238,14 +238,18 @@ class ControlledOptimizer(BaseOptimizer):
         return len(self._combos)
 
 
-def create_optimizer(config: OptimizerConfig, parameters: list[ParameterSpec]) -> BaseOptimizer:
+def create_optimizer(
+    config: OptimizerConfig,
+    parameters: list[ParameterSpec],
+    seed: int | None = None,
+) -> BaseOptimizer:
     """Factory: build the optimizer described by ``config``."""
     if config.type == "grid":
         return GridOptimizer(parameters)
     if config.type == "random":
-        return RandomOptimizer(parameters, budget=config.budget)
+        return RandomOptimizer(parameters, budget=config.budget, seed=seed)
     if config.type == "bayesian":
-        return BayesianOptimizer(parameters, budget=config.budget)
+        return BayesianOptimizer(parameters, budget=config.budget, seed=seed)
     if config.type == "baseline_sweep":
         return ControlledOptimizer(parameters, baseline=config.baseline)
     raise ValueError(f"Unknown optimizer type: {config.type!r}")

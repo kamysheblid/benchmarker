@@ -69,6 +69,26 @@ def main() -> None:
     default=False,
     help="Run automated code evaluation on responses (scoring rubric with unit tests, static analysis).",
 )
+@click.option(
+    "--cost-per-1m-input",
+    default=0.0,
+    type=float,
+    show_default=True,
+    help="USD cost per 1M input tokens (for cost tracking in ranking).",
+)
+@click.option(
+    "--cost-per-1m-output",
+    default=0.0,
+    type=float,
+    show_default=True,
+    help="USD cost per 1M output tokens (for cost tracking in ranking).",
+)
+@click.option(
+    "--seed",
+    default=None,
+    type=int,
+    help="Random seed for deterministic sampling (applied to optimizer).",
+)
 def run(
     model: str,
     tests_path: Path,
@@ -77,6 +97,9 @@ def run(
     run_dir: Path,
     csv_path: Path | None,
     auto_eval: bool,
+    cost_per_1m_input: float,
+    cost_per_1m_output: float,
+    seed: int | None,
 ) -> None:
     """Run a benchmark for the given model."""
     click.echo(f"Hello, world — benchmarking model: {model}")
@@ -98,7 +121,7 @@ def run(
     )
 
     client = LLMClient(base_url=url) if url else LLMClient()
-    optimizer = create_optimizer(params.optimizer, params.parameters)
+    optimizer = create_optimizer(params.optimizer, params.parameters, seed=seed)
     reporter = _RichProgress()
     runner = Runner(
         client,
@@ -109,6 +132,8 @@ def run(
         progress=reporter,
         static_params=params.static_params,
         auto_eval=auto_eval,
+        cost_per_1m_input=cost_per_1m_input,
+        cost_per_1m_output=cost_per_1m_output,
     )
     results, auto_scores = asyncio.run(runner.run())
 
@@ -201,19 +226,32 @@ class _RichProgress(ProgressReporter):
 
 def _print_speed_table(results: list) -> None:
     speeds: dict[str, list[float]] = {}
+    costs: dict[str, list[float]] = {}
     for r in results:
         if r.error is None:
-            speeds.setdefault(config_key(r.config), []).append(r.tokens_per_sec)
+            k = config_key(r.config)
+            speeds.setdefault(k, []).append(r.tokens_per_sec)
+            costs.setdefault(k, []).append(r.cost_estimate)
     ranking = sorted(
         ((k, sum(v) / len(v)) for k, v in speeds.items()),
         key=lambda x: x[1],
         reverse=True,
     )[:5]
+
+    # Check if any cost data is non-zero
+    has_costs = any(any(c > 0 for c in cv) for cv in costs.values())
+
     table = Table(title="Top Configs by tokens/s (speed only)")
     table.add_column("Config", overflow="fold")
     table.add_column("Avg Tok/s", justify="right")
+    if has_costs:
+        table.add_column("Avg Cost/Req", justify="right")
     for cfg_key, speed in ranking:
-        table.add_row(cfg_key, f"{speed:.2f}")
+        avg_cost = sum(costs.get(cfg_key, [0])) / len(costs.get(cfg_key, [1])) if costs.get(cfg_key) else 0
+        row = [cfg_key, f"{speed:.2f}"]
+        if has_costs:
+            row.append(f"${avg_cost:.8f}")
+        table.add_row(*row)
     console.print(table)
 
 
