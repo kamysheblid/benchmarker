@@ -180,3 +180,17 @@ async def test_runner_passes_stop_sequence(tmp_path: Path) -> None:
     assert len(client.calls) == 1
     _messages, _model, params = client.calls[0]
     assert params["stop"] == ["\n```", "\ndef "]
+
+
+async def test_run_result_carries_category(tmp_path: Path) -> None:
+    suite = TestSuite(
+        tests=[TestCase(id="t1", prompt="Hello")],
+        categories={"t1": "reasoning"},
+    )
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _FakeClient()
+    runner = Runner(client, suite, optimizer, "m", tmp_path / "run")
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].category == "reasoning"
