@@ -1,5 +1,6 @@
 """Tests for optimizer implementations (Phase 5)."""
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from benchmarker.optimizers import (
     RandomOptimizer,
     create_optimizer,
 )
+from benchmarker.optimizer_history import OptimizerHistory, OptimizerTrial
 
 
 def _specs() -> list[ParameterSpec]:
@@ -208,3 +210,66 @@ def test_create_optimizer_factory() -> None:
     assert isinstance(
         create_optimizer(OptimizerConfig(type="bayesian", budget=5), _specs()), BayesianOptimizer
     )
+
+
+# --------------------------------------------------------------------------- #
+# Optimizer history persistence
+# --------------------------------------------------------------------------- #
+def test_history_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "history.json"
+    history = OptimizerHistory(
+        trials=[
+            OptimizerTrial(params={"temperature": 0.5}, quality=80.0, tokens_per_sec=100.0),
+            OptimizerTrial(params={"temperature": 0.8}, quality=90.0, tokens_per_sec=120.0),
+        ]
+    )
+    history.to_json(path)
+    loaded = OptimizerHistory.from_json(path)
+    assert len(loaded.trials) == 2
+    assert loaded.trials[0].params == {"temperature": 0.5}
+    assert loaded.trials[0].quality == 80.0
+    assert loaded.trials[0].tokens_per_sec == 100.0
+    assert loaded.trials[1].params == {"temperature": 0.8}
+    assert loaded.trials[1].quality == 90.0
+    assert loaded.trials[1].tokens_per_sec == 120.0
+
+
+def test_bayesian_replay_history(tmp_path: Path) -> None:
+    path = tmp_path / "history.json"
+    history = OptimizerHistory(
+        trials=[
+            OptimizerTrial(params={"temperature": 0.3 + i * 0.1}, quality=50.0 + i * 10.0, tokens_per_sec=80.0 + i * 5.0)
+            for i in range(5)
+        ]
+    )
+    history.to_json(path)
+
+    opt = BayesianOptimizer.from_history(
+        path=path,
+        parameters=_specs(),
+        budget=10,
+        seed=42,
+    )
+    assert isinstance(opt, BayesianOptimizer)
+    # The study should now contain 5 completed trials
+    assert len(opt.study.trials) == 5
+
+
+def test_history_serialization_with_none_fields(tmp_path: Path) -> None:
+    path = tmp_path / "history.json"
+    history = OptimizerHistory(
+        trials=[
+            OptimizerTrial(params={"x": 1}, quality=None, tokens_per_sec=None),
+            OptimizerTrial(params={"x": 2}, quality=75.0, tokens_per_sec=None),
+            OptimizerTrial(params={"x": 3}, quality=None, tokens_per_sec=60.0),
+        ]
+    )
+    history.to_json(path)
+    loaded = OptimizerHistory.from_json(path)
+    assert len(loaded.trials) == 3
+    assert loaded.trials[0].quality is None
+    assert loaded.trials[0].tokens_per_sec is None
+    assert loaded.trials[1].quality == 75.0
+    assert loaded.trials[1].tokens_per_sec is None
+    assert loaded.trials[2].quality is None
+    assert loaded.trials[2].tokens_per_sec == 60.0
