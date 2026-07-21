@@ -74,8 +74,8 @@ async def test_end_to_end_run(tmp_path: Path) -> None:
 
     md = (run_dir / JUDGE_PROMPT_FILE).read_text()
     assert "Config:" in md or "## Config" in md
-    assert "Hello" in md
-    assert "Count" in md
+    assert "Hi there" in md
+    assert "One two three" in md
     assert "recommendation" in md.lower()
 
 
