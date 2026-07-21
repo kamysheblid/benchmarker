@@ -264,5 +264,93 @@ def test_load_tests_from_dir_case_sensitive_categories(tmp_path: Path) -> None:
     cat_a.mkdir()
     (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
 
-    suite = load_tests_from_dir(tmp_path, categories=["Cat-A"])
-    assert len(suite.tests) == 0
+    with pytest.raises(ValueError) as exc:
+        load_tests_from_dir(tmp_path, categories=["Cat-A"])
+    assert "Cat-A" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Directory-aware loader — additional coverage
+# --------------------------------------------------------------------------- #
+def test_load_tests_from_dir_loads_all(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+
+    cat_b = tmp_path / "bug-fixing"
+    cat_b.mkdir()
+    (cat_b / "001-b.json").write_text(json.dumps({"id": "t2", "prompt": "B"}))
+
+    suite = load_tests_from_dir(tmp_path)
+    assert isinstance(suite, TestSuite)
+    assert len(suite.tests) == 2
+    assert suite.tests[0].id == "t2"
+    assert suite.tests[1].id == "t1"
+
+
+def test_load_tests_from_dir_category_filter(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+
+    cat_b = tmp_path / "bug-fixing"
+    cat_b.mkdir()
+    (cat_b / "001-b.json").write_text(json.dumps({"id": "t2", "prompt": "B"}))
+
+    cat_c = tmp_path / "refactoring"
+    cat_c.mkdir()
+    (cat_c / "001-c.json").write_text(json.dumps({"id": "t3", "prompt": "C"}))
+
+    suite = load_tests_from_dir(tmp_path, categories=["bug-fixing"])
+    assert len(suite.tests) == 1
+    assert suite.tests[0].id == "t2"
+
+
+def test_load_tests_from_dir_empty_category_skipped(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+
+    (tmp_path / "empty-category").mkdir()
+
+    suite = load_tests_from_dir(tmp_path)
+    assert len(suite.tests) == 1
+    assert suite.tests[0].id == "t1"
+
+
+def test_load_tests_from_dir_nonexistent_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(FileNotFoundError) as exc:
+        load_tests_from_dir(missing)
+    assert "does_not_exist" in str(exc.value)
+
+
+def test_load_tests_from_dir_duplicate_ids_across_categories_raises(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+
+    cat_b = tmp_path / "bug-fixing"
+    cat_b.mkdir()
+    (cat_b / "001-b.json").write_text(json.dumps({"id": "t1", "prompt": "B"}))
+
+    with pytest.raises(ValueError) as exc:
+        load_tests_from_dir(tmp_path)
+    assert "duplicate test id" in str(exc.value)
+
+
+def test_discover_categories_lists_sorted(tmp_path: Path) -> None:
+    (tmp_path / "zebra").mkdir()
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "mango").mkdir()
+    assert discover_categories(tmp_path) == ["alpha", "mango", "zebra"]
+
+
+def test_load_tests_from_dir_invalid_category_raises(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+
+    with pytest.raises(ValueError) as exc:
+        load_tests_from_dir(tmp_path, categories=["nonexistent"])
+    assert "nonexistent" in str(exc.value)
