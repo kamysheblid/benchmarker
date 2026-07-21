@@ -14,6 +14,7 @@ from benchmarker.eval_file import EVAL_FILE_NAME, generate_eval_md
 from benchmarker.optimizers import BaseOptimizer
 
 RAW_DATA_FILE = "raw_data.json"
+AUTO_EVAL_FILE = "scores_auto.json"
 
 
 class RunResult(BaseModel):
@@ -65,6 +66,7 @@ class Runner:
         max_retries: int = 1,
         progress: ProgressReporter | None = None,
         static_params: dict[str, Any] | None = None,
+        auto_eval: bool = False,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -75,9 +77,15 @@ class Runner:
         self.progress = progress or ProgressReporter()
         # Fixed params merged into every request (e.g. enable_thinking:false).
         self.static_params = dict(static_params or {})
+        self.auto_eval = auto_eval
 
-    async def run(self) -> list[RunResult]:
-        """Execute the full benchmark, returning and persisting all results."""
+    async def run(self) -> tuple[list[RunResult], dict[str, Any] | None]:
+        """Execute the full benchmark, returning and persisting all results.
+
+        Returns:
+            A tuple of (results, auto_eval_scores). ``auto_eval_scores`` is
+            ``None`` when ``auto_eval`` is False.
+        """
         self.run_dir.mkdir(parents=True, exist_ok=True)
         results: list[RunResult] = []
         per_trial = sum(t.repeat for t in self.test_suite.tests) or 1
@@ -108,7 +116,16 @@ class Runner:
         self._save(results)
         eval_path = self.run_dir / EVAL_FILE_NAME
         generate_eval_md(self.run_dir, results, out_path=eval_path)
-        return results
+
+        # Auto-evaluation
+        auto_scores: dict[str, Any] | None = None
+        if self.auto_eval:
+            from benchmarker.evaluator import evaluate_run
+
+            auto_scores = evaluate_run(results)
+            self._save_auto_eval(auto_scores)
+
+        return results, auto_scores
 
     async def _run_one(self, config: dict[str, Any], test: Any, rep: int) -> RunResult:
         messages = []
@@ -171,3 +188,20 @@ class Runner:
             json.dumps([r.model_dump() for r in results], indent=2, default=str),
             encoding="utf-8",
         )
+
+    def _save_auto_eval(self, scores: dict[str, dict[str, float]]) -> None:
+        """Save auto-evaluation scores as a JSON scores file compatible with import-scores."""
+        path = self.run_dir / AUTO_EVAL_FILE
+        entries: list[dict[str, Any]] = []
+        for merge_key, metrics in scores.items():
+            # merge_key format: config::test_id::rep
+            parts = merge_key.rsplit("::", 2)
+            if len(parts) == 3:
+                config_str, test_id, rep_str = parts
+                entries.append({
+                    "config": config_str,
+                    "test_id": test_id,
+                    "repetition": int(rep_str),
+                    "scores": metrics,
+                })
+        path.write_text(json.dumps(entries, indent=2), encoding="utf-8")

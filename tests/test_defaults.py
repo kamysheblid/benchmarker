@@ -37,7 +37,7 @@ def test_cli_falls_back_to_defaults(monkeypatch) -> None:
             self.results = []
 
         async def run(self):
-            return []
+            return [], None
 
     monkeypatch.setattr(cli, "Runner", _NoopRunner)
 

@@ -63,6 +63,12 @@ def main() -> None:
     type=click.Path(path_type=Path),
     help="Optional path to export the speed ranking as CSV.",
 )
+@click.option(
+    "--auto-eval/--no-auto-eval",
+    "auto_eval",
+    default=False,
+    help="Run automated code evaluation on responses (scoring rubric with unit tests, static analysis).",
+)
 def run(
     model: str,
     tests_path: Path,
@@ -70,6 +76,7 @@ def run(
     url: str | None,
     run_dir: Path,
     csv_path: Path | None,
+    auto_eval: bool,
 ) -> None:
     """Run a benchmark for the given model."""
     click.echo(f"Hello, world — benchmarking model: {model}")
@@ -101,13 +108,19 @@ def run(
         run_dir,
         progress=reporter,
         static_params=params.static_params,
+        auto_eval=auto_eval,
     )
-    results = asyncio.run(runner.run())
+    results, auto_scores = asyncio.run(runner.run())
 
     _print_speed_table(results)
     if csv_path:
         _write_speed_csv(csv_path, results)
         click.echo(f"Exported speed ranking CSV to {csv_path}")
+
+    if auto_scores:
+        _print_auto_eval_summary(results, auto_scores)
+        click.echo(f"\nSaved auto-evaluation scores to {run_dir / 'scores_auto.json'}")
+        click.echo("Run `import-scores` with this file to compute combined quality+speed ranking.")
 
     click.echo(f"\nSaved raw results to {run_dir / 'raw_data.json'}")
     click.echo(f"Saved evaluation file to {run_dir / 'eval_output.md'}")
@@ -231,6 +244,34 @@ def _write_csv(path: Path, ranking: list) -> None:
                     item.combined,
                 ]
             )
+
+
+def _print_auto_eval_summary(results: list, auto_scores: dict) -> None:
+    """Print a summary table of auto-evaluation scores grouped by config."""
+    from benchmarker.runner import config_key
+
+    # Aggregate per config
+    per_config: dict[str, list[float]] = {}
+    for r in results:
+        if r.error is not None:
+            continue
+        ck = config_key(r.config)
+        key = f"{ck}::{r.test_id}::{r.repetition}"
+        if key in auto_scores:
+            overall = auto_scores[key].get("overall", 0.0)
+            per_config.setdefault(ck, []).append(overall)
+
+    table = Table(title="Auto-Evaluation: Top Configs by Code Quality")
+    table.add_column("Config", overflow="fold")
+    table.add_column("Avg Quality Score", justify="right")
+    ranking = sorted(
+        ((k, sum(v) / len(v)) for k, v in per_config.items()),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:5]
+    for cfg_key, avg_q in ranking:
+        table.add_row(cfg_key, f"{avg_q:.3f}")
+    console.print(table)
 
 
 if __name__ == "__main__":

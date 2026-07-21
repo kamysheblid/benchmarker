@@ -60,7 +60,7 @@ async def test_end_to_end_run_and_eval(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
     runner = Runner(client, _tiny_suite(), _grid(), "m", run_dir)
-    results = await runner.run()
+    results, _ = await runner.run()
 
     # 2 trials * 2 tests = 4 results
     assert len(results) == 4
@@ -120,7 +120,7 @@ async def test_end_to_end_server_error(tmp_path: Path) -> None:
     respx.post(BASE_URL).mock(return_value=Response(500, content="internal error"))
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
-    results = await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
+    results, _ = await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
     # all attempts failed after retries -> recorded as failures
     assert len(results) == 4
     assert all(r.error for r in results)

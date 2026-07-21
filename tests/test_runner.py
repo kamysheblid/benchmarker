@@ -47,7 +47,7 @@ async def test_runner_call_count_and_saving(tmp_path: Path) -> None:
     optimizer = GridOptimizer(specs)
     client = _FakeClient()
     runner = Runner(client, _tiny_suite(), optimizer, "m", tmp_path / "run")
-    results = await runner.run()
+    results, _ = await runner.run()
 
     assert len(client.calls) == 6  # 2 trials * (1 + 2 reps)
     assert len(results) == 6
@@ -62,7 +62,7 @@ async def test_runner_feeds_speed_to_bayesian(tmp_path: Path) -> None:
     runner = Runner(
         client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
     )
-    results = await runner.run()
+    results, _ = await runner.run()
     assert len(results) == 2
     told = [t for t in optimizer.study.trials if t.state.is_finished()]
     assert len(told) == 2
@@ -88,7 +88,7 @@ async def test_runner_records_failure_and_continues(tmp_path: Path) -> None:
     runner = Runner(
         client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
     )
-    results = await runner.run()
+    results, _ = await runner.run()
     assert len(results) == 1
     assert results[0].response_text == "ok"
 
@@ -104,7 +104,7 @@ async def test_runner_persistent_failure_records_error(tmp_path: Path) -> None:
     runner = Runner(
         client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
     )
-    results = await runner.run()
+    results, _ = await runner.run()
     assert len(results) == 1
     assert results[0].response_text == ""  # failure recorded
 
