@@ -194,3 +194,89 @@ async def test_run_result_carries_category(tmp_path: Path) -> None:
     results, _ = await runner.run()
     assert len(results) == 1
     assert results[0].category == "reasoning"
+
+
+async def test_runner_retries_on_endpoint_error(tmp_path: Path) -> None:
+    class _FailingThenSucceedingClient:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, model, **params):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise LLMClientError("endpoint error")
+            return CompletionResult(
+                prompt_tokens=1,
+                completion_tokens=1,
+                response_text="ok",
+                ttft=0.01,
+                total_time=0.1,
+                tokens_per_sec=10.0,
+            )
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _FailingThenSucceedingClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=2,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].response_text == "ok"
+    assert client.attempts == 3
+
+
+async def test_runner_exhausts_retries_then_records_error(tmp_path: Path) -> None:
+    class _AlwaysFails:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, model, **params):
+            self.attempts += 1
+            raise LLMClientError("always")
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _AlwaysFails()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=2,
+    )
+    results, _ = await runner.run()
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert client.attempts == 3
+
+
+async def test_runner_does_not_retry_on_validation_error(tmp_path: Path) -> None:
+    class _ValidationErrorClient:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def complete(self, messages, model, **params):
+            self.attempts += 1
+            raise ValueError("invalid params")
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _ValidationErrorClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        max_retries=2,
+    )
+    with pytest.raises(ValueError):
+        await runner.run()
+    assert client.attempts == 1
