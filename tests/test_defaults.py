@@ -17,12 +17,15 @@ def test_default_params_load() -> None:
 
 def test_default_tests_load() -> None:
     suite = load_tests_default()
-    # four prompt categories
-    assert len(suite.tests) == 4
+    # expanded prompt suite — start with four original categories
+    assert len(suite.tests) >= 4
     ids = {t.id for t in suite.tests}
-    assert {"creative", "reasoning", "coding", "factual"} <= ids
+    assert {"creative", "reasoning", "factual"} <= ids
+    assert "coding_chunk" in ids
     # every default test has a non-empty prompt
     assert all(t.prompt.strip() for t in suite.tests)
+    # every test has a repeat >= 5 for statistical significance
+    assert all(t.repeat >= 5 for t in suite.tests)
 
 
 def test_cli_falls_back_to_defaults(monkeypatch) -> None:
