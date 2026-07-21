@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from benchmarker.parse_judge import extract_json, parse_and_act, validate_judge_response
+from benchmarker.parse_judge import (
+    extract_json,
+    format_verdict,
+    parse_and_act,
+    validate_judge_response,
+    JudgeScore,
+    JudgeVerdict,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -179,6 +186,89 @@ class TestParseAndAct:
     def test_malformed_judge_reply(self) -> None:
         with pytest.raises(ValueError):
             parse_and_act("this is not json at all")
+
+
+# ------------------------------------------------------------------ #
+#  per_category support                                                #
+# ------------------------------------------------------------------ #
+class TestPerCategory:
+    def test_judge_score_accepts_per_category(self) -> None:
+        score = JudgeScore(overall=80, reasoning="ok", per_category={"clarity": 90, "accuracy": 70})
+        assert score.per_category == {"clarity": 90, "accuracy": 70}
+
+    def test_judge_score_backward_compat_per_task(self) -> None:
+        score = JudgeScore(overall=80, reasoning="ok", per_category={"clarity": 90})
+        assert score.per_task == {"clarity": 90}
+
+    def test_judge_verdict_from_json_per_category(self) -> None:
+        data = {
+            "scores": {"cfg1": {"overall": 85, "reasoning": "good", "per_category": {"clarity": 90}}},
+            "recommendation": "conclude",
+            "confidence": "high",
+            "reasoning": "ok",
+        }
+        verdict = JudgeVerdict.from_json(data)
+        assert verdict.scores["cfg1"].per_category == {"clarity": 90}
+
+    def test_judge_verdict_from_json_backward_compat_per_task(self) -> None:
+        data = {
+            "scores": {"cfg1": {"overall": 85, "reasoning": "good", "per_task": {"clarity": 90}}},
+            "recommendation": "conclude",
+            "confidence": "high",
+            "reasoning": "ok",
+        }
+        verdict = JudgeVerdict.from_json(data)
+        assert verdict.scores["cfg1"].per_category == {"clarity": 90}
+
+    def test_validate_per_category_values(self) -> None:
+        data = {
+            "scores": {"cfg1": {"overall": 85, "per_category": {"clarity": 90, "accuracy": 70}}},
+            "recommendation": "conclude",
+            "confidence": "high",
+            "reasoning": "ok",
+        }
+        validate_judge_response(data)  # should not raise
+
+    def test_validate_per_category_out_of_range(self) -> None:
+        data = {
+            "scores": {"cfg1": {"overall": 85, "per_category": {"clarity": 101}}},
+            "recommendation": "conclude",
+            "confidence": "high",
+            "reasoning": "ok",
+        }
+        with pytest.raises(ValueError, match="per_category"):
+            validate_judge_response(data)
+
+    def test_format_verdict_displays_per_category(self) -> None:
+        verdict = JudgeVerdict(
+            scores={"cfg1": JudgeScore(overall=85, reasoning="good", per_category={"clarity": 90})},
+            recommendation="conclude",
+            confidence="high",
+            reasoning="ok",
+        )
+        out = format_verdict(verdict)
+        assert "per-category" in out or "per_category" in out
+        assert "clarity=90" in out
+
+    def test_best_config_per_category(self) -> None:
+        verdict = JudgeVerdict(
+            scores={"cfg1": JudgeScore(overall=85, reasoning="good")},
+            recommendation="conclude",
+            confidence="high",
+            reasoning="ok",
+            best_config_per_category={"clarity": "cfg1", "accuracy": "cfg2"},
+        )
+        assert verdict.best_config_per_category == {"clarity": "cfg1", "accuracy": "cfg2"}
+
+    def test_best_config_per_category_backward_compat(self) -> None:
+        verdict = JudgeVerdict(
+            scores={"cfg1": JudgeScore(overall=85, reasoning="good")},
+            recommendation="conclude",
+            confidence="high",
+            reasoning="ok",
+            best_config_per_category={"clarity": "cfg1"},
+        )
+        assert verdict.best_config_per_task == {"clarity": "cfg1"}
 
 
 def _stdout_last(capsys: pytest.CaptureFixture | None) -> str:
