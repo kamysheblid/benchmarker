@@ -29,12 +29,17 @@ class JudgeScore:
 
     overall: int
     reasoning: str
-    per_task: dict[str, int] | None = None
+    per_category: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.overall <= 100:
             msg = f"Score must be between 0 and 100, got {self.overall}"
             raise ValueError(msg)
+
+    @property
+    def per_task(self) -> dict[str, int] | None:
+        """Backward-compat alias for per_category."""
+        return self.per_category
 
 
 @dataclass
@@ -46,16 +51,17 @@ class JudgeVerdict:
     confidence: str  # "high" | "medium" | "low"
     reasoning: str
     refinement_hint: dict[str, list[float]] | None = None
-    best_config_per_task: dict[str, str | None] | None = None
+    best_config_per_category: dict[str, str | None] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> JudgeVerdict:
         scores = {}
         for sid, sdata in data.get("scores", {}).items():
+            per_category = sdata.get("per_category") or sdata.get("per_task")
             scores[sid] = JudgeScore(
                 overall=sdata["overall"],
                 reasoning=sdata.get("reasoning", ""),
-                per_task=sdata.get("per_task"),
+                per_category=per_category,
             )
         return cls(
             scores=scores,
@@ -63,8 +69,13 @@ class JudgeVerdict:
             confidence=data.get("confidence", "medium"),
             reasoning=data.get("reasoning", ""),
             refinement_hint=data.get("refinement_hint"),
-            best_config_per_task=data.get("best_config_per_task"),
+            best_config_per_category=data.get("best_config_per_category") or data.get("best_config_per_task"),
         )
+
+    @property
+    def best_config_per_task(self) -> dict[str, str | None] | None:
+        """Backward-compat alias for best_config_per_category."""
+        return self.best_config_per_category
 
 
 def validate_judge_response(data: dict[str, Any]) -> None:
@@ -95,6 +106,16 @@ def validate_judge_response(data: dict[str, Any]) -> None:
         overall = sdata["overall"]
         if not isinstance(overall, int) or not 0 <= overall <= 100:
             raise ValueError(f"Score overall out of range (0-100): {overall}")
+
+        per_cat = sdata.get("per_category") or sdata.get("per_task")
+        if per_cat is not None:
+            if not isinstance(per_cat, dict):
+                raise ValueError(f"Score per_category for {sid} must be a dict")
+            for cat_name, cat_score in per_cat.items():
+                if not isinstance(cat_score, int) or not 0 <= cat_score <= 100:
+                    raise ValueError(
+                        f"Score per_category['{cat_name}'] out of range (0-100): {cat_score}"
+                    )
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -207,21 +228,21 @@ def format_verdict(verdict: JudgeVerdict) -> str:
         "Scores:",
     ]
     for sid, score in verdict.scores.items():
-        per_task_str = ""
-        if score.per_task:
-            per_task_str = "  (per-task: " + ", ".join(f"{k}={v}" for k, v in score.per_task.items()) + ")"
-        lines.append(f"  {sid:>36}  {score.overall}/100  — {score.reasoning}{per_task_str}")
+        per_cat_str = ""
+        if score.per_category:
+            per_cat_str = "  (per-category: " + ", ".join(f"{k}={v}" for k, v in score.per_category.items()) + ")"
+        lines.append(f"  {sid:>36}  {score.overall}/100  — {score.reasoning}{per_cat_str}")
     if verdict.refinement_hint:
         lines.append("")
         lines.append("Refinement hint:")
         for param, values in verdict.refinement_hint.items():
             formatted = ", ".join(str(v) for v in values)
             lines.append(f"  {param}: [{formatted}]")
-    if verdict.best_config_per_task:
+    if verdict.best_config_per_category:
         lines.append("")
-        lines.append("Best config per task:")
-        for task, cfg in verdict.best_config_per_task.items():
-            lines.append(f"  {task}: {cfg or 'none'}")
+        lines.append("Best config per category:")
+        for cat, cfg in verdict.best_config_per_category.items():
+            lines.append(f"  {cat}: {cfg or 'none'}")
     lines.append("")
     lines.append("=" * 55)
     return "\n".join(lines)
