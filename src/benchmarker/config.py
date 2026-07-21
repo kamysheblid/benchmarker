@@ -152,6 +152,45 @@ class TestSuite(BaseModel):
         return tests
 
 
+def validate_params(config: ParamsConfig) -> None:
+    """Validate the search space before any benchmark starts.
+
+    Checks:
+    - ``low <= high`` for every numeric parameter.
+    - ``step > 0`` when ``step`` is provided.
+    - ``step <= high - low`` when ``step`` is provided.
+    - ``budget >= 1``.
+
+    Raises:
+        ValueError: with an actionable message on the first violation found.
+    """
+    if config.optimizer.budget < 1:
+        raise ValueError(f"budget must be >= 1, got {config.optimizer.budget}")
+    for spec in config.parameters:
+        if spec.type is ParameterType.CATEGORICAL:
+            continue
+        low = spec.low
+        high = spec.high
+        if low is None or high is None:
+            continue
+        if low > high:
+            raise ValueError(
+                f"parameter '{spec.name}': low ({low}) must be <= high ({high})"
+            )
+        if spec.step is not None:
+            step = spec.step
+            if step <= 0:
+                raise ValueError(
+                    f"parameter '{spec.name}': step must be > 0, got {step}"
+                )
+            range_size = high - low
+            if step > range_size:
+                raise ValueError(
+                    f"parameter '{spec.name}': step ({step}) must be <= "
+                    f"high - low ({range_size})"
+                )
+
+
 def load_params(path: Path) -> ParamsConfig:
     """Load and validate a parameter search-space YAML file.
 
@@ -163,7 +202,9 @@ def load_params(path: Path) -> ParamsConfig:
     if not path.exists():
         raise FileNotFoundError(f"Parameter config not found: {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return ParamsConfig.model_validate(raw)
+    config = ParamsConfig.model_validate(raw)
+    validate_params(config)
+    return config
 
 
 def load_tests(path: Path) -> TestSuite:
@@ -259,7 +300,8 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
 
 def load_params_default() -> ParamsConfig:
     """Load the bundled default parameter search space."""
-    return _load_bundled("params.default.yaml", load_params)
+    config = _load_bundled("params.default.yaml", load_params)
+    return config
 
 
 def load_tests_default() -> TestSuite:

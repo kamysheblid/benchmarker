@@ -17,6 +17,7 @@ from benchmarker.config import (
     load_params,
     load_tests,
     load_tests_from_dir,
+    validate_params,
 )
 
 
@@ -354,3 +355,88 @@ def test_load_tests_from_dir_invalid_category_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError) as exc:
         load_tests_from_dir(tmp_path, categories=["nonexistent"])
     assert "nonexistent" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# validate_params (1.1)
+# --------------------------------------------------------------------------- #
+def test_validate_params_valid() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0, step=0.1)
+        ],
+    )
+    validate_params(cfg)  # should not raise
+
+
+def test_validate_params_low_gt_high_raises() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=1.0, high=0.1)
+        ],
+    )
+    with pytest.raises(ValueError, match="low .* high"):
+        validate_params(cfg)
+
+
+def test_validate_params_step_zero_raises() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0, step=0)
+        ],
+    )
+    with pytest.raises(ValueError, match="step"):
+        validate_params(cfg)
+
+
+def test_validate_params_step_negative_raises() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0, step=-0.1)
+        ],
+    )
+    with pytest.raises(ValueError, match="step"):
+        validate_params(cfg)
+
+
+def test_validate_params_step_exceeds_range_raises() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=0.5, step=1.0)
+        ],
+    )
+    with pytest.raises(ValueError, match="step"):
+        validate_params(cfg)
+
+
+def test_validate_params_step_within_range_ok() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[
+            ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=1.0, step=0.5)
+        ],
+    )
+    validate_params(cfg)  # should not raise
+
+
+def test_validate_params_budget_implicitly_valid() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=1),
+        parameters=[],
+    )
+    validate_params(cfg)  # should not raise
+
+
+def test_validate_params_categorical_skips_numeric_checks() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=5),
+        parameters=[
+            ParameterSpec(name="strategy", type=ParameterType.CATEGORICAL, choices=["a", "b"])
+        ],
+    )
+    validate_params(cfg)  # should not raise
