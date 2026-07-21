@@ -3,21 +3,21 @@
     "id": "creative",
     "prompt": "You are a creative writing assistant. Write a short, evocative two-sentence poem about a quiet winter morning. Return only the poem, with no explanation.",
     "max_tokens": 2048,
-    "repeat": 2,
+    "repeat": 5,
     "reasoning": false
   },
   {
     "id": "reasoning",
     "prompt": "You are a math tutor. A train leaves at 2:00 PM traveling 60 mph. Another leaves the same station at 3:00 PM on a parallel track traveling 90 mph. At what time does the second train catch the first? Show your reasoning step by step, then state the final answer clearly.",
     "max_tokens": 2048,
-    "repeat": 2,
+    "repeat": 5,
     "reasoning": true
   },
   {
     "id": "coding",
     "prompt": "You are a code generation assistant. Return a complete Python function with a one-line docstring. Do not include any explanation. Only output the function code.\n\nTask: Write a function def chunk(seq, n) that splits a sequence into consecutive chunks of size n, with the final chunk containing any remainder. Include a one-line docstring and a short usage example in a comment.",
     "max_tokens": 2048,
-    "repeat": 2,
+    "repeat": 5,
     "reasoning": false,
     "stop": ["\ndef ", "\nclass "]
   },
@@ -25,7 +25,7 @@
     "id": "factual",
     "prompt": "You are a concise technical writer. In three bullet points, summarize the main differences between TCP and UDP. Do not include any extra commentary.",
     "max_tokens": 2048,
-    "repeat": 2,
+    "repeat": 5,
     "reasoning": false
   }
 ]
