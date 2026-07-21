@@ -337,6 +337,42 @@ class AdaptiveOptimizer(BaseOptimizer):
         return len(self._combos)
 
 
+class TwoPhaseOptimizer(BaseOptimizer):
+    """Wrapper that runs phase1 then delegates to phase2 using a refinement hint.
+
+    The runner is responsible for constructing the phase2 ``AdaptiveOptimizer``
+    and calling ``switch_phase()`` when the phase1 budget is exhausted.
+    """
+
+    def __init__(
+        self,
+        phase1: BaseOptimizer,
+        phase2: BaseOptimizer | None,
+        phase1_budget: int,
+    ) -> None:
+        super().__init__(phase1.parameters)
+        self._phase1 = phase1
+        self._phase2 = phase2
+        self._phase1_budget = phase1_budget
+        self._active = phase1
+
+    def suggest(self) -> dict[str, Any]:
+        return self._active.suggest()
+
+    def tell(self, metrics: dict[str, Any]) -> None:
+        self._active.tell(metrics)
+
+    def switch_phase(self) -> None:
+        if self._phase2 is not None:
+            self._active = self._phase2
+
+    def estimated_steps(self) -> int:
+        steps = self._phase1.estimated_steps()
+        if self._phase2 is not None:
+            steps += self._phase2.estimated_steps()
+        return steps
+
+
 def create_optimizer(
     config: OptimizerConfig,
     parameters: list[ParameterSpec],
@@ -349,15 +385,21 @@ def create_optimizer(
     When ``refinement_hint`` is provided and the optimizer type is ``grid``,
     an :class:`AdaptiveOptimizer` is returned instead — narrowing the search
     space to the hinted ranges with finer granularity.
+
+    For ``bayesian`` and ``random`` types, a :class:`TwoPhaseOptimizer` is
+    returned so the runner can do coarse-then-fine search.
     """
     if refinement_hint and config.type in ("grid", "random"):
         return AdaptiveOptimizer(parameters, refinement_hint=refinement_hint, resolution_factor=resolution_factor)
     if config.type == "grid":
         return GridOptimizer(parameters)
     if config.type == "random":
-        return RandomOptimizer(parameters, budget=config.budget, seed=seed)
+        phase1 = RandomOptimizer(parameters, budget=max(1, round(config.budget * 0.4)), seed=seed)
+        return TwoPhaseOptimizer(phase1, None, phase1_budget=max(1, round(config.budget * 0.4)))
     if config.type == "bayesian":
-        return BayesianOptimizer(parameters, budget=config.budget, seed=seed)
+        phase1_budget = max(1, round(config.budget * 0.4))
+        phase1 = BayesianOptimizer(parameters, budget=phase1_budget, seed=seed)
+        return TwoPhaseOptimizer(phase1, None, phase1_budget=phase1_budget)
     if config.type == "baseline_sweep":
         return ControlledOptimizer(parameters, baseline=config.baseline)
     raise ValueError(f"Unknown optimizer type: {config.type!r}")
