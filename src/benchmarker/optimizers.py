@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import random
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import optuna
@@ -139,6 +140,7 @@ class BayesianOptimizer(BaseOptimizer):
         self.budget = budget
         self._count = 0
         self._last_trial: optuna.trial.Trial | None = None
+        self.seed = seed
         self.study = study or optuna.create_study(direction=direction, sampler=optuna.samplers.RandomSampler(seed=seed))
 
     def suggest(self) -> dict[str, Any]:
@@ -161,7 +163,9 @@ class BayesianOptimizer(BaseOptimizer):
     def tell(self, metrics: dict[str, Any]) -> None:
         if self._last_trial is None:
             return
-        value = metrics.get("tokens_per_sec")
+        quality = metrics.get("quality")
+        tokens_per_sec = metrics.get("tokens_per_sec")
+        value = quality if quality is not None else tokens_per_sec
         if value is None:
             # mark as failed trial
             self.study.tell(self._last_trial, state=optuna.trial.TrialState.FAIL)
@@ -171,6 +175,27 @@ class BayesianOptimizer(BaseOptimizer):
 
     def estimated_steps(self) -> int:
         return self.budget
+
+    @classmethod
+    def from_history(
+        cls,
+        path: Path,
+        parameters: list[ParameterSpec],
+        budget: int = 20,
+        direction: str = "maximize",
+        seed: int | None = None,
+    ) -> BayesianOptimizer:
+        """Create a new optimizer and replay history from a JSON file."""
+        from benchmarker.optimizer_history import OptimizerHistory
+
+        optimizer = cls(
+            parameters=parameters,
+            budget=budget,
+            direction=direction,
+            seed=seed,
+        )
+        OptimizerHistory.from_json(path).replay_into(optimizer)
+        return optimizer
 
 
 class ControlledOptimizer(BaseOptimizer):
