@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import json
 import shutil
 from pathlib import Path
 
@@ -11,7 +12,14 @@ from rich.progress import Progress
 from rich.table import Table
 
 from benchmarker.client import LLMClient
-from benchmarker.config import load_params, load_params_default, load_tests, load_tests_default
+from benchmarker.config import (
+    discover_categories,
+    load_params,
+    load_params_default,
+    load_tests,
+    load_tests_default,
+    load_tests_from_dir,
+)
 from benchmarker.optimizers import create_optimizer
 from benchmarker.parse_judge import parse_and_act
 from benchmarker.runner import ProgressReporter, Runner, config_key
@@ -23,6 +31,23 @@ console = Console()
 @click.version_option(package_name="benchmarker")
 def main() -> None:
     """benchmarker - find optimal LLM sampling parameters."""
+
+
+_CATEGORY_MAP = {
+    "coding_chunk": "code-generation",
+    "algorithmic_palindrome": "code-generation",
+    "algorithmic_twosum": "code-generation",
+    "algorithmic_bst": "code-generation",
+    "bugfixing": "bug-fixing",
+    "refactoring": "refactoring",
+    "explanation_sql": "security-vulnerability",
+    "explanation_complexity": "comment-generation",
+    "integration_api": "api-integration",
+    "test_generation": "test-generation",
+    "creative": "general",
+    "reasoning": "general",
+    "factual": "general",
+}
 
 
 # ------------------------------------------------------------------ #
@@ -44,29 +69,41 @@ def main() -> None:
     help="Overwrite existing files.",
 )
 def init(target_dir: Path, force: bool) -> None:
-    """Create default config files (tests.json, params.yaml) in the given directory."""
+    """Create default config files (benchmarks/, params.yaml) in the given directory."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    tests_dest = target_dir / "tests.json"
+    benchmarks_dest = target_dir / "benchmarks"
     params_dest = target_dir / "params.yaml"
 
     copied = []
 
-    if not tests_dest.exists() or force:
+    if not benchmarks_dest.exists() or force:
+        if force and benchmarks_dest.exists():
+            shutil.rmtree(benchmarks_dest)
+        benchmarks_dest.mkdir(parents=True, exist_ok=True)
+
         suite = load_tests_default()
-        import json
-        tests_dest.write_text(
-            json.dumps([t.model_dump(exclude_none=True) for t in suite.tests], indent=2),
-            encoding="utf-8",
-        )
-        copied.append(tests_dest)
+        counters: dict[str, int] = {}
+        for test in suite.tests:
+            category = _CATEGORY_MAP.get(test.id, "general")
+            counters[category] = counters.get(category, 0) + 1
+            cat_dir = benchmarks_dest / category
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{counters[category]:03d}-{test.id}.json"
+            filepath = cat_dir / filename
+            filepath.write_text(
+                json.dumps(test.model_dump(exclude_none=True), indent=2),
+                encoding="utf-8",
+            )
+        copied.append(benchmarks_dest)
     else:
-        click.echo(f"  (skip) {tests_dest} already exists — use --force to overwrite.")
+        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
 
     if not params_dest.exists() or force:
         params = load_params_default()
         import yaml
+
         raw = {
             "optimizer": {"type": params.optimizer.type, "budget": params.optimizer.budget},
             "parameters": [
@@ -97,15 +134,31 @@ def init(target_dir: Path, force: bool) -> None:
 # ------------------------------------------------------------------ #
 #  run                                                                #
 # ------------------------------------------------------------------ #
+def _parse_categories(ctx, param, value):
+    if value is None:
+        return None
+    slugs = [s.strip() for s in value.split(",")]
+    bad = [s for s in slugs if not s]
+    if bad:
+        raise click.BadParameter(f"Empty category slugs are not allowed: {bad}")
+    return slugs
+
+
 @main.command()
 @click.option("--model", default="default", show_default=True, help="Model name to benchmark.")
 @click.option(
     "--tests",
     "tests_path",
-    default="tests.json",
+    default="benchmarks",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Path to the test suite JSON file (falls back to bundled default if missing).",
+    help="Path to the test suite JSON file or benchmarks/ directory (falls back to bundled default if missing).",
+)
+@click.option(
+    "--categories",
+    default=None,
+    callback=_parse_categories,
+    help="Comma-separated list of category slugs to load (directory mode only).",
 )
 @click.option(
     "--params",
@@ -165,6 +218,7 @@ def init(target_dir: Path, force: bool) -> None:
 def run(
     model: str,
     tests_path: Path,
+    categories: list[str] | None,
     params_path: Path,
     url: str | None,
     run_dir: Path,
@@ -178,7 +232,23 @@ def run(
     click.echo(f"Hello, world — benchmarking model: {model}")
 
     if tests_path.exists():
-        suite = load_tests(tests_path)
+        if tests_path.is_file():
+            if categories is not None:
+                raise click.BadParameter(
+                    "--categories is only valid when --tests is a directory (benchmarks/). "
+                    "For flat test files, omit --categories."
+                )
+            suite = load_tests(tests_path)
+        else:
+            valid_categories = discover_categories(tests_path)
+            if categories is not None:
+                invalid = [c for c in categories if c not in valid_categories]
+                if invalid:
+                    raise click.BadParameter(
+                        f"Invalid categories: {', '.join(invalid)}. "
+                        f"Valid categories: {', '.join(valid_categories)}"
+                    )
+            suite = load_tests_from_dir(tests_path, categories=categories)
     else:
         click.echo(f"(no {tests_path} found — using bundled default test suite)")
         suite = load_tests_default()
@@ -255,6 +325,7 @@ def parse(reply_file: Path | None, params_path: Path) -> None:
     else:
         click.echo("Reading judge reply from stdin (paste the reply and press Ctrl+D)...")
         import sys
+
         text = sys.stdin.read()
 
     try:
