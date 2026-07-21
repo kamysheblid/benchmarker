@@ -1,0 +1,8 @@
+{
+  "id": "integration_api",
+  "prompt": "You are a code generation assistant. Return a complete Python script with a one-line docstring. Do not include any explanation. Only output the script code.\n\nTask: Write a Python script that fetches JSON data from 'https://api.example.com/data', parses the response, and writes selected fields ('id', 'name', 'value') to a CSV file named 'output.csv'. Use the requests library. Include error handling for network failures. Include a short usage example in a comment.",
+  "max_tokens": 2048,
+  "repeat": 5,
+  "reasoning": false,
+  "stop": ["\nimport ", "\nfrom "]
+}
