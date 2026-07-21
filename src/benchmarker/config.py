@@ -255,7 +255,11 @@ def load_params_default() -> ParamsConfig:
 
 def load_tests_default() -> TestSuite:
     """Load the bundled default test suite."""
-    return _load_bundled("tests.default.json", load_tests)
+    from importlib import resources
+
+    ref = resources.files("benchmarker.defaults").joinpath("benchmarks")
+    with resources.as_file(ref) as path:
+        return load_tests_from_dir(path)
 
 
 def _load_bundled(name: str, loader: Callable[[Path], Any]) -> Any:
