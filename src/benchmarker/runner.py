@@ -16,7 +16,7 @@ from benchmarker.client import ClientError, LLMClientError, ServerError, Transie
 from benchmarker.config import TestSuite
 from benchmarker.eval_file import JUDGE_PROMPT_FILE, generate_judge_prompt
 from benchmarker.optimizer_history import OptimizerHistory, OptimizerTrial
-from benchmarker.optimizers import BaseOptimizer
+from benchmarker.optimizers import AdaptiveOptimizer, BaseOptimizer, TwoPhaseOptimizer
 from benchmarker.param_validation import validate_sampling_params
 
 RAW_DATA_FILE = "raw_data.json"
@@ -58,6 +58,59 @@ def config_key(config: dict[str, Any]) -> str:
     return json.dumps(config, sort_keys=True, default=str)
 
 
+def _best_config_from_history(history: list[OptimizerTrial]) -> dict[str, Any]:
+    """Return the best config by tokens_per_sec from trial history."""
+    if not history:
+        return {}
+    best = max(history, key=lambda t: t.tokens_per_sec if t.tokens_per_sec is not None else 0.0)
+    return dict(best.params)
+
+
+def _build_refinement_hint(config: dict[str, Any], step: float = 1.0) -> dict[str, list[float]]:
+    """Build refinement hint by expanding each numeric param by ±step."""
+    hint: dict[str, list[float]] = {}
+    for name, value in config.items():
+        if isinstance(value, (int, float)):
+            hint[name] = [float(value) - step, float(value) + step]
+    return hint
+
+
+def _build_refinement_hint_from_passing(
+    results: list[RunResult], auto_scores: dict[str, dict[str, float]]
+) -> dict[str, dict[str, float]]:
+    """Build refinement hints from configs that pass auto-eval quality thresholds."""
+    # Group auto-eval scores by config key
+    config_scores: dict[str, list[dict[str, float]]] = {}
+    for r in results:
+        ck = config_key(r.config)
+        merge_key = f"{ck}::{r.test_id}::{r.repetition}"
+        if merge_key in auto_scores:
+            config_scores.setdefault(ck, []).append(auto_scores[merge_key])
+
+    # Determine which configs are auto_rejected
+    rejected_configs: set[str] = set()
+    for ck, scores in config_scores.items():
+        for s in scores:
+            if s.get("exec_safety", 1.0) < 0.5 or (
+                s.get("unit_pass_rate", 1.0) == 0 and s.get("static_quality", 1.0) < 0.3
+            ):
+                rejected_configs.add(ck)
+                break
+
+    passing_configs = [r.config for r in results if config_key(r.config) not in rejected_configs]
+    if not passing_configs:
+        return {}
+
+    param_names = set(passing_configs[0].keys())
+
+    hints: dict[str, dict[str, float]] = {}
+    for name in param_names:
+        values = [float(c[name]) for c in passing_configs if name in c and isinstance(c[name], (int, float))]
+        if values:
+            hints[name] = {"low": min(values), "high": max(values)}
+    return hints
+
+
 class ProgressReporter:
     """No-op progress reporter; safe default when no UI is wanted."""
 
@@ -88,6 +141,7 @@ class Runner:
         cost_per_1m_input: float = 0.0,
         cost_per_1m_output: float = 0.0,
         history_path: Path | None = None,
+        params_path: Path | None = None,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -102,6 +156,7 @@ class Runner:
         self.cost_per_1m_input = cost_per_1m_input
         self.cost_per_1m_output = cost_per_1m_output
         self.history_path = history_path
+        self.params_path = params_path
         self._history: list[OptimizerTrial] = []
         self._config_failures: dict[str, int] = {}
         self._config_attempts: dict[str, int] = {}
@@ -178,6 +233,26 @@ class Runner:
                 )
             )
             trial_index += 1
+            # Switch to phase2 when phase1 budget is exhausted
+            if isinstance(self.optimizer, TwoPhaseOptimizer):
+                if (
+                    trial_index >= self.optimizer._phase1_budget
+                    and self.optimizer._active is self.optimizer._phase1
+                ):
+                    if self.auto_eval:
+                        from benchmarker.evaluator import evaluate_run
+                        phase1_scores = evaluate_run(results)
+                        hint = _build_refinement_hint_from_passing(results, phase1_scores)
+                    else:
+                        best_coarse = _best_config_from_history(self._history)
+                        hint = _build_refinement_hint(best_coarse, step=1.0)
+                    phase2 = AdaptiveOptimizer(
+                        parameters=self.optimizer.parameters,
+                        resolution_factor=5,
+                        refinement_hint=hint or None,
+                    )
+                    self.optimizer._phase2 = phase2
+                    self.optimizer.switch_phase()
             self._save(results)
             self._save_history()
         self.progress.finish()
@@ -195,6 +270,7 @@ class Runner:
 
             auto_scores = evaluate_run(results)
             self._save_auto_eval(auto_scores)
+            self._write_refinement_hints(results, auto_scores)
 
         return results, auto_scores
 
@@ -292,14 +368,34 @@ class Runner:
                 })
         path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
-    def _save_history(self) -> None:
-        """Persist optimizer trial history to JSON."""
+    def _write_refinement_hints(
+        self, results: list[RunResult], auto_scores: dict[str, dict[str, float]]
+    ) -> None:
+        """Write refinement_hints to params.yaml from passing auto-eval configs."""
+        if not self.params_path or not self.params_path.exists():
+            return
+        hints = _build_refinement_hint_from_passing(results, auto_scores)
+        if not hints:
+            return
+        try:
+            import yaml
+
+            raw = yaml.safe_load(self.params_path.read_text(encoding="utf-8")) or {}
+            raw["refinement_hints"] = hints
+            self.params_path.write_text(
+                yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8"
+            )
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("failed to write refinement hints: %s", exc)
+
+    def _save_history(self, top_k: int = 20) -> None:
+        """Persist optimizer trial history to JSON, keeping only the top-K trials."""
         if not self.history_path:
             return
         try:
             history = OptimizerHistory()
             for trial in self._history:
                 history.add_trial(trial)
-            history.to_json(self.history_path)
+            history.to_json(self.history_path, top_k=top_k)
         except (OSError, json.JSONDecodeError, TypeError) as exc:
             logger.warning("failed to save optimizer history: %s", exc)

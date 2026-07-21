@@ -31,9 +31,27 @@ class OptimizerHistory:
         """Append a new trial to the history."""
         self.trials.append(trial)
 
-    def to_json(self, path: str | Path) -> None:
-        """Save the history to a JSON file."""
+    def to_json(self, path: str | Path, top_k: int | None = None) -> None:
+        """Save the history to a JSON file, optionally keeping only the top-K trials.
+
+        When ``top_k`` is provided, trials are sorted by quality/speed descending
+        and only the best ``top_k`` are persisted. When ``top_k`` is ``None``
+        (default), all trials are saved in insertion order for backward
+        compatibility.
+        """
         path = Path(path)
+        if top_k is not None:
+            sorted_trials = sorted(
+                self.trials,
+                key=lambda t: (
+                    t.quality if t.quality is not None else float("-inf"),
+                    t.tokens_per_sec if t.tokens_per_sec is not None else float("-inf"),
+                ),
+                reverse=True,
+            )
+            kept = sorted_trials[:top_k]
+        else:
+            kept = list(self.trials)
         payload = [
             {
                 "params": trial.params,
@@ -41,7 +59,7 @@ class OptimizerHistory:
                 "tokens_per_sec": trial.tokens_per_sec,
                 "metadata": trial.metadata,
             }
-            for trial in self.trials
+            for trial in kept
         ]
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

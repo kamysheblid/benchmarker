@@ -8,7 +8,8 @@ import pytest
 
 from benchmarker.client import ClientError, CompletionResult, LLMClientError, ServerError, TransientError
 from benchmarker.config import OptimizerConfig, ParameterSpec, ParameterType, TestCase, TestSuite
-from benchmarker.optimizers import BayesianOptimizer, GridOptimizer, create_optimizer
+from benchmarker.optimizers import AdaptiveOptimizer, BayesianOptimizer, GridOptimizer, TwoPhaseOptimizer, create_optimizer
+from benchmarker.optimizer_history import OptimizerTrial
 from benchmarker.runner import RunResult, Runner
 
 
@@ -489,3 +490,188 @@ async def test_runner_circuit_breaker_sets_config_aborted_flag(tmp_path: Path) -
     # After circuit breaker trips, the second rep should have config_aborted
     assert results[1].config_aborted is True
     assert results[0].config_aborted is not True  # first attempt before trip
+
+
+# --------------------------------------------------------------------------- #
+# 2.1 Two-phase search
+# --------------------------------------------------------------------------- #
+async def test_runner_two_phase_switches_after_phase1_budget(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=10.0, step=0.1)]
+    phase1 = BayesianOptimizer(specs, budget=3)
+    optimizer = TwoPhaseOptimizer(phase1, None, phase1_budget=3)
+    client = _FakeClient()
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+    )
+    results, _ = await runner.run()
+    # 3 phase1 configs + adaptive phase2 configs (at least 1)
+    assert len(results) >= 4
+    # After switching, the active optimizer should be AdaptiveOptimizer
+    assert isinstance(optimizer._active, AdaptiveOptimizer)
+
+
+async def test_runner_two_phase_builds_phase2_from_best_coarse(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=10.0, step=0.1)]
+    phase1 = BayesianOptimizer(specs, budget=2)
+    phase2_holder: list[Any] = []
+
+    class _CaptureAdaptive(AdaptiveOptimizer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            phase2_holder.append(self)
+
+    # Monkey-patch AdaptiveOptimizer temporarily
+    import benchmarker.runner as runner_mod
+    original = runner_mod.AdaptiveOptimizer
+    runner_mod.AdaptiveOptimizer = _CaptureAdaptive
+    try:
+        optimizer = TwoPhaseOptimizer(phase1, None, phase1_budget=2)
+        client = _FakeClient()
+        runner = Runner(
+            client,
+            TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+            optimizer,
+            "m",
+            tmp_path / "run",
+        )
+        await runner.run()
+    finally:
+        runner_mod.AdaptiveOptimizer = original
+
+    assert len(phase2_holder) == 1
+    assert phase2_holder[0].refinement_hint is not None
+    assert "temperature" in phase2_holder[0].refinement_hint
+
+
+# --------------------------------------------------------------------------- #
+# 2.2 Auto-eval quality gate and refinement hints
+# --------------------------------------------------------------------------- #
+async def test_runner_writes_refinement_hints_from_passing_configs(tmp_path: Path) -> None:
+    import yaml
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=10.0, step=0.1)]
+    optimizer = GridOptimizer(specs)
+    params_path = tmp_path / "params.yaml"
+    params_path.write_text(
+        yaml.dump({
+            "optimizer": {"type": "grid", "budget": 1},
+            "parameters": [{"name": "temperature", "type": "float", "low": 0.0, "high": 10.0, "step": 0.1}],
+        })
+    )
+
+    class _GoodCodeClient:
+        async def complete(self, messages, model, **params):
+            return CompletionResult(
+                prompt_tokens=1, completion_tokens=1, response_text="def foo(): pass",
+                ttft=0.01, total_time=0.1, tokens_per_sec=10.0,
+            )
+
+    runner = Runner(
+        _GoodCodeClient(),
+        TestSuite(tests=[TestCase(id="coding_chunk", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        auto_eval=True,
+        params_path=params_path,
+    )
+    _, auto_scores = await runner.run()
+
+    raw = yaml.safe_load(params_path.read_text(encoding="utf-8"))
+    assert "refinement_hints" in raw
+    assert "temperature" in raw["refinement_hints"]
+
+
+async def test_runner_excludes_auto_rejected_configs_from_hints(tmp_path: Path) -> None:
+    import yaml
+
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=10.0, step=0.1)]
+    optimizer = GridOptimizer(specs)
+    params_path = tmp_path / "params.yaml"
+    params_path.write_text(
+        yaml.dump({
+            "optimizer": {"type": "grid", "budget": 1},
+            "parameters": [{"name": "temperature", "type": "float", "low": 0.0, "high": 10.0, "step": 0.1}],
+        })
+    )
+
+    class _BadCodeClient:
+        async def complete(self, messages, model, **params):
+            return CompletionResult(
+                prompt_tokens=1, completion_tokens=1, response_text="not python code at all",
+                ttft=0.01, total_time=0.1, tokens_per_sec=10.0,
+            )
+
+    runner = Runner(
+        _BadCodeClient(),
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        auto_eval=True,
+        params_path=params_path,
+    )
+    _, auto_scores = await runner.run()
+
+    raw = yaml.safe_load(params_path.read_text(encoding="utf-8"))
+    # exec_safety=0.0 for no code, so should be auto_rejected
+    assert "refinement_hints" not in raw or raw.get("refinement_hints") == {}
+
+
+# --------------------------------------------------------------------------- #
+# 2.4 Optimizer history compaction
+# --------------------------------------------------------------------------- #
+async def test_runner_history_compacted_to_top_k(tmp_path: Path) -> None:
+    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
+    optimizer = GridOptimizer(specs)
+    client = _FakeClient()
+    history_file = tmp_path / "optimizer_history.json"
+    runner = Runner(
+        client,
+        TestSuite(tests=[TestCase(id="t1", prompt="x")]),
+        optimizer,
+        "m",
+        tmp_path / "run",
+        history_path=history_file,
+    )
+    # Only 1 trial, so compaction keeps it
+    await runner.run()
+    data = json.loads(history_file.read_text(encoding="utf-8"))
+    assert len(data) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Helper function tests
+# --------------------------------------------------------------------------- #
+def test_best_config_from_history_empty() -> None:
+    from benchmarker.runner import _best_config_from_history
+    assert _best_config_from_history([]) == {}
+
+
+def test_best_config_from_history_best_by_tokens_per_sec() -> None:
+    from benchmarker.runner import _best_config_from_history
+    history = [
+        OptimizerTrial(params={"x": 1}, tokens_per_sec=10.0),
+        OptimizerTrial(params={"x": 2}, tokens_per_sec=50.0),
+        OptimizerTrial(params={"x": 3}, tokens_per_sec=30.0),
+    ]
+    best = _best_config_from_history(history)
+    assert best == {"x": 2}
+
+
+def test_build_refinement_hint_expands_by_step() -> None:
+    from benchmarker.runner import _build_refinement_hint
+    hint = _build_refinement_hint({"temperature": 0.7, "top_k": 10}, step=0.2)
+    assert hint["temperature"] == pytest.approx([0.5, 0.9])
+    assert hint["top_k"] == pytest.approx([9.8, 10.2])
+
+
+def test_build_refinement_hint_skips_non_numeric() -> None:
+    from benchmarker.runner import _build_refinement_hint
+    hint = _build_refinement_hint({"strategy": "a", "temp": 0.5}, step=1.0)
+    assert "strategy" not in hint
+    assert hint["temp"] == [-0.5, 1.5]

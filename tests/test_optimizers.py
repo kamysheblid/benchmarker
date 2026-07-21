@@ -13,6 +13,7 @@ from benchmarker.optimizers import (
     ControlledOptimizer,
     GridOptimizer,
     RandomOptimizer,
+    TwoPhaseOptimizer,
     create_optimizer,
 )
 from benchmarker.optimizer_history import OptimizerHistory, OptimizerTrial
@@ -205,10 +206,10 @@ def test_factory_invalid_type_raises() -> None:
 def test_create_optimizer_factory() -> None:
     assert isinstance(create_optimizer(OptimizerConfig(type="grid", budget=5), _specs()), GridOptimizer)
     assert isinstance(
-        create_optimizer(OptimizerConfig(type="random", budget=5), _specs()), RandomOptimizer
+        create_optimizer(OptimizerConfig(type="random", budget=5), _specs()), TwoPhaseOptimizer
     )
     assert isinstance(
-        create_optimizer(OptimizerConfig(type="bayesian", budget=5), _specs()), BayesianOptimizer
+        create_optimizer(OptimizerConfig(type="bayesian", budget=5), _specs()), TwoPhaseOptimizer
     )
 
 
@@ -273,3 +274,73 @@ def test_history_serialization_with_none_fields(tmp_path: Path) -> None:
     assert loaded.trials[1].tokens_per_sec is None
     assert loaded.trials[2].quality is None
     assert loaded.trials[2].tokens_per_sec == 60.0
+
+
+# --------------------------------------------------------------------------- #
+# TwoPhaseOptimizer
+# --------------------------------------------------------------------------- #
+class _FakePhaseOptimizer:
+    def __init__(self, values: list[dict[str, Any]]) -> None:
+        self.values = list(values)
+        self._i = 0
+        self.tell_calls: list[dict[str, Any]] = []
+        self.parameters = []
+
+    def suggest(self) -> dict[str, Any]:
+        if self._i >= len(self.values):
+            raise StopIteration
+        v = self.values[self._i]
+        self._i += 1
+        return dict(v)
+
+    def tell(self, metrics: dict[str, Any]) -> None:
+        self.tell_calls.append(metrics)
+
+    def estimated_steps(self) -> int:
+        return len(self.values)
+
+
+def test_two_phase_delegates_suggest_to_phase1() -> None:
+    phase1 = _FakePhaseOptimizer([{"x": 1}, {"x": 2}])
+    phase2 = _FakePhaseOptimizer([{"x": 3}])
+    opt = TwoPhaseOptimizer(phase1, phase2, phase1_budget=2)
+    assert opt.suggest() == {"x": 1}
+    assert opt.suggest() == {"x": 2}
+
+
+def test_two_phase_switch_phase_changes_active() -> None:
+    phase1 = _FakePhaseOptimizer([{"x": 1}])
+    phase2 = _FakePhaseOptimizer([{"x": 2}])
+    opt = TwoPhaseOptimizer(phase1, phase2, phase1_budget=1)
+    opt.suggest()
+    opt.switch_phase()
+    assert opt.suggest() == {"x": 2}
+
+
+def test_two_phase_tell_delegates_to_active() -> None:
+    phase1 = _FakePhaseOptimizer([{"x": 1}])
+    phase2 = _FakePhaseOptimizer([{"x": 2}])
+    opt = TwoPhaseOptimizer(phase1, phase2, phase1_budget=1)
+    opt.suggest()
+    opt.tell({"score": 1.0})
+    assert phase1.tell_calls == [{"score": 1.0}]
+    opt.switch_phase()
+    opt.suggest()
+    opt.tell({"score": 2.0})
+    assert phase2.tell_calls == [{"score": 2.0}]
+
+
+def test_two_phase_estimated_steps() -> None:
+    phase1 = _FakePhaseOptimizer([{"x": 1}, {"x": 2}])
+    phase2 = _FakePhaseOptimizer([{"x": 3}, {"x": 4}])
+    opt = TwoPhaseOptimizer(phase1, phase2, phase1_budget=2)
+    # phase1 not exhausted yet
+    assert opt.estimated_steps() == 4
+
+
+def test_two_phase_stop_iteration_when_phase1_exhausted_and_no_phase2() -> None:
+    phase1 = _FakePhaseOptimizer([{"x": 1}])
+    opt = TwoPhaseOptimizer(phase1, None, phase1_budget=1)
+    opt.suggest()
+    with pytest.raises(StopIteration):
+        opt.suggest()
