@@ -245,7 +245,7 @@ def test_bayesian_replay_history(tmp_path: Path) -> None:
     history.to_json(path)
 
     opt = BayesianOptimizer.from_history(
-        path=path,
+        history_path=path,
         parameters=_specs(),
         budget=10,
         seed=42,

@@ -215,7 +215,7 @@ class _MockHistoryOptimizer:
         seed: int | None = None,
     ):
         from benchmarker.optimizer_history import OptimizerHistory
-        history = OptimizerHistory.load(history_path)
+        history = OptimizerHistory.from_json(history_path)
         optimizer = cls(parameters=parameters, budget=budget, seed=seed)
         for trial in history.trials:
             optimizer.tell({"tokens_per_sec": trial.tokens_per_sec, "quality": trial.quality})
