@@ -130,6 +130,7 @@ class Runner:
         self._save(results)
         judge_path = self.run_dir / JUDGE_PROMPT_FILE
         generate_judge_prompt(self.run_dir, results, out_path=judge_path)
+        # config_map.json is written alongside the judge prompt by generate_judge_prompt
 
         # Auto-evaluation
         auto_scores: dict[str, Any] | None = None

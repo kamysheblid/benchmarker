@@ -32,13 +32,11 @@ def test_generate_judge_prompt_structure(tmp_path: Path) -> None:
     generate_judge_prompt(tmp_path, results, out_path=out)
     text = out.read_text()
 
-    # one section per unique config
-    assert "temperature\": 0.7" in text or "temperature=0.7" in text
-    # config key appears as heading
-    key07 = config_key({"temperature": 0.7})
-    key10 = config_key({"temperature": 1.0})
-    assert key07 in text
-    assert key10 in text
+    # one section per unique config (now using short IDs like config_1)
+    assert "temperature=0.7" in text or "temperature\": 0.7" in text
+    # short IDs appear in headings and summary table
+    assert "config_1" in text
+    assert "config_2" in text
     # prompts and responses present
     assert "Say hi" in text
     assert "Hello!" in text
@@ -47,7 +45,7 @@ def test_generate_judge_prompt_structure(tmp_path: Path) -> None:
     assert "Hi there." in text
     # Config summary table present
     assert "## Config Summary" in text
-    assert "Config | Avg Tok/s" in text
+    assert "Config ID" in text and "Avg Tok/s" in text
 
 
 def test_generate_judge_prompt_instructions(tmp_path: Path) -> None:

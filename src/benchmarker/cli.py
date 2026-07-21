@@ -224,7 +224,7 @@ def run(
     click.echo(
         "\nNext step: copy the contents of judge_prompt.md to your judge LLM,\n"
         "save the reply as a text file, then run:\n"
-        f"  benchmarker parse <reply_file>"
+        f"  benchmarker parse <reply_file> --run-dir {run_dir}"
     )
 
 
@@ -241,7 +241,14 @@ def run(
     type=click.Path(path_type=Path),
     help="Path to the parameter YAML to update when refining.",
 )
-def parse(reply_file: Path | None, params_path: Path) -> None:
+@click.option(
+    "--run-dir",
+    "run_dir",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Run directory to load config_map.json from for config lookup.",
+)
+def parse(reply_file: Path | None, params_path: Path, run_dir: Path | None) -> None:
     """Parse the judge's reply and take action (conclude / refine / expand).
 
     If REPLY_FILE is provided, read it; otherwise read from stdin.
@@ -258,7 +265,7 @@ def parse(reply_file: Path | None, params_path: Path) -> None:
         text = sys.stdin.read()
 
     try:
-        parse_and_act(text, params_path=params_path)
+        parse_and_act(text, params_path=params_path, run_dir=run_dir)
     except ValueError as exc:
         click.echo(f"Error parsing judge reply: {exc}", err=True)
         click.echo("\nRaw text received:", err=True)

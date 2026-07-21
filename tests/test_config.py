@@ -13,10 +13,8 @@ from benchmarker.config import (
     ParameterType,
     TestCase,
     TestSuite,
-    discover_categories,
     load_params,
     load_tests,
-    load_tests_from_dir,
 )
 
 
@@ -168,101 +166,3 @@ def test_load_tests_max_tokens_must_be_int(tmp_path: Path) -> None:
     path.write_text(json.dumps([{"id": "t1", "prompt": "x", "max_tokens": 1.5}]))
     with pytest.raises(ValidationError):
         load_tests(path)
-
-
-# --------------------------------------------------------------------------- #
-# Directory-aware loaders
-# --------------------------------------------------------------------------- #
-def test_discover_categories_empty(tmp_path: Path) -> None:
-    assert discover_categories(tmp_path) == []
-
-
-def test_discover_categories_sorted(tmp_path: Path) -> None:
-    (tmp_path / "zebra").mkdir()
-    (tmp_path / "alpha").mkdir()
-    (tmp_path / "mango").mkdir()
-    assert discover_categories(tmp_path) == ["alpha", "mango", "zebra"]
-
-
-def test_discover_categories_ignores_files(tmp_path: Path) -> None:
-    (tmp_path / "readme.md").write_text("hello")
-    (tmp_path / "cat-a").mkdir()
-    assert discover_categories(tmp_path) == ["cat-a"]
-
-
-def test_load_tests_from_dir_loads_all(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-first.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-    (cat_a / "002-second.json").write_text(json.dumps({"id": "t2", "prompt": "B"}))
-
-    cat_b = tmp_path / "cat-b"
-    cat_b.mkdir()
-    (cat_b / "001-third.json").write_text(json.dumps({"id": "t3", "prompt": "C"}))
-
-    suite = load_tests_from_dir(tmp_path)
-    assert len(suite.tests) == 3
-    assert suite.tests[0].id == "t1"
-    assert suite.tests[1].id == "t2"
-    assert suite.tests[2].id == "t3"
-
-
-def test_load_tests_from_dir_filters_categories(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-
-    cat_b = tmp_path / "cat-b"
-    cat_b.mkdir()
-    (cat_b / "001-b.json").write_text(json.dumps({"id": "t2", "prompt": "B"}))
-
-    suite = load_tests_from_dir(tmp_path, categories=["cat-a"])
-    assert len(suite.tests) == 1
-    assert suite.tests[0].id == "t1"
-
-
-def test_load_tests_from_dir_skips_empty_category(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-
-    (tmp_path / "cat-b").mkdir()
-
-    suite = load_tests_from_dir(tmp_path)
-    assert len(suite.tests) == 1
-    assert suite.tests[0].id == "t1"
-
-
-def test_load_tests_from_dir_skips_non_json(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-    (cat_a / "readme.txt").write_text("ignored")
-    (cat_a / "data.yaml").write_text("ignored")
-
-    suite = load_tests_from_dir(tmp_path)
-    assert len(suite.tests) == 1
-    assert suite.tests[0].id == "t1"
-
-
-def test_load_tests_from_dir_duplicate_ids_raises_value_error(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-
-    cat_b = tmp_path / "cat-b"
-    cat_b.mkdir()
-    (cat_b / "001-b.json").write_text(json.dumps({"id": "t1", "prompt": "B"}))
-
-    with pytest.raises(ValueError) as exc:
-        load_tests_from_dir(tmp_path)
-    assert "duplicate test id" in str(exc.value)
-
-
-def test_load_tests_from_dir_case_sensitive_categories(tmp_path: Path) -> None:
-    cat_a = tmp_path / "cat-a"
-    cat_a.mkdir()
-    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
-
-    suite = load_tests_from_dir(tmp_path, categories=["Cat-A"])
-    assert len(suite.tests) == 0

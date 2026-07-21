@@ -1,0 +1,42 @@
+optimizer:
+  budget: 10
+  type: bayesian
+parameters:
+- name: temperature
+  type: float
+  low: 0.0
+  high: 1.5
+  step: 0.2
+- name: top_k
+  type: int
+  low: 10
+  high: 100
+  step: 10
+- name: top_p
+  type: float
+  low: 0.1
+  high: 1.0
+  step: 0.1
+- name: min_p
+  type: float
+  low: 0.0
+  high: 0.2
+  step: 0.05
+- name: repeat_penalty
+  type: float
+  low: 1.0
+  high: 1.2
+  step: 0.1
+- name: frequency_penalty
+  type: float
+  low: 0.0
+  high: 1.0
+  step: 0.5
+- name: presence_penalty
+  type: float
+  low: 0.0
+  high: 1.0
+  step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
