@@ -139,6 +139,7 @@ class TestSuite(BaseModel):
     __test__ = False  # prevent pytest from collecting this Pydantic model as a test suite
 
     tests: list[TestCase] = Field(default_factory=list)
+    categories: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("tests")
     @classmethod
@@ -229,6 +230,7 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
 
     seen: set[str] = set()
     tests: list[dict[str, Any]] = []
+    category_map: dict[str, str] = {}
 
     for category in discover_categories(path):
         if categories is not None and category not in categories:
@@ -250,8 +252,9 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
                     raise ValueError(f"duplicate test id: {tc_id!r}")
                 seen.add(tc_id)
                 tests.append(item)
+                category_map[tc_id] = category
 
-    return TestSuite(tests=tests)
+    return TestSuite(tests=tests, categories=category_map)
 
 
 def load_params_default() -> ParamsConfig:
