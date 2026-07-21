@@ -354,3 +354,31 @@ def test_load_tests_from_dir_invalid_category_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError) as exc:
         load_tests_from_dir(tmp_path, categories=["nonexistent"])
     assert "nonexistent" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Category tracking
+# --------------------------------------------------------------------------- #
+def test_load_tests_from_dir_sets_categories(tmp_path: Path) -> None:
+    cat_a = tmp_path / "code-generation"
+    cat_a.mkdir()
+    (cat_a / "001-a.json").write_text(json.dumps({"id": "t1", "prompt": "A"}))
+    (cat_a / "002-b.json").write_text(json.dumps({"id": "t2", "prompt": "B"}))
+
+    cat_b = tmp_path / "bug-fixing"
+    cat_b.mkdir()
+    (cat_b / "001-c.json").write_text(json.dumps({"id": "t3", "prompt": "C"}))
+
+    suite = load_tests_from_dir(tmp_path)
+    assert suite.categories == {
+        "t1": "code-generation",
+        "t2": "code-generation",
+        "t3": "bug-fixing",
+    }
+
+
+def test_load_tests_flat_file_has_empty_categories(tmp_path: Path) -> None:
+    path = tmp_path / "tests.json"
+    path.write_text(json.dumps([{"id": "t1", "prompt": "Hi"}]))
+    suite = load_tests(path)
+    assert suite.categories == {}
