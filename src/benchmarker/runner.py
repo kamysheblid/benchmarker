@@ -262,6 +262,6 @@ class Runner:
             history = OptimizerHistory()
             for trial in self._history:
                 history.add_trial(trial)
-            history.save(self.history_path)
-        except (OSError, json.JSONDecodeError) as exc:
+            history.to_json(self.history_path)
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
             logger.warning("failed to save optimizer history: %s", exc)

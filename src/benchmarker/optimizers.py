@@ -184,13 +184,9 @@ class BayesianOptimizer(BaseOptimizer):
         budget: int = 20,
         seed: int | None = None,
     ) -> BayesianOptimizer:
-        history = OptimizerHistory.load(history_path)
+        history = OptimizerHistory.from_json(history_path)
         optimizer = cls(parameters=parameters, budget=budget, seed=seed)
-        for trial in history.trials:
-            optimizer.tell({
-                "tokens_per_sec": trial.tokens_per_sec,
-                "quality": trial.quality,
-            })
+        history.replay_into(optimizer)
         return optimizer
 
 
