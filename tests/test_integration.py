@@ -1,4 +1,4 @@
-"""End-to-end integration tests (Phase 11), using respx to mock llama-server."""
+"""End-to-end integration tests, using respx to mock llama-server."""
 
 import asyncio
 import json
@@ -16,9 +16,10 @@ from benchmarker.config import (
     TestCase,
     TestSuite,
 )
-from benchmarker.importer import import_scores
+from benchmarker.eval_file import JUDGE_PROMPT_FILE
 from benchmarker.optimizers import GridOptimizer
-from benchmarker.runner import Runner, config_key
+from benchmarker.parse_judge import parse_and_act
+from benchmarker.runner import Runner
 
 
 def _stream_body(text_parts: list[str], usage: dict) -> bytes:
@@ -46,7 +47,7 @@ def _grid() -> GridOptimizer:
 
 
 @respx.mock
-async def test_end_to_end_run_and_eval(tmp_path: Path) -> None:
+async def test_end_to_end_run(tmp_path: Path) -> None:
     respx.post(BASE_URL).mock(
         return_value=Response(
             200,
@@ -60,26 +61,26 @@ async def test_end_to_end_run_and_eval(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
     runner = Runner(client, _tiny_suite(), _grid(), "m", run_dir)
-    results = await runner.run()
+    results, _ = await runner.run()
 
     # 2 trials * 2 tests = 4 results
     assert len(results) == 4
     assert (run_dir / "raw_data.json").exists()
-    assert (run_dir / "eval_output.md").exists()
+    assert (run_dir / JUDGE_PROMPT_FILE).exists()
 
     raw = json.loads((run_dir / "raw_data.json").read_text())
     assert len(raw) == 4
     assert all(r["response_text"] for r in raw)
 
-    md = (run_dir / "eval_output.md").read_text()
-    assert "Config:" in md
-    assert "Hello" in md
-    assert "Count" in md
-    assert "RATING" in md.upper()
+    md = (run_dir / JUDGE_PROMPT_FILE).read_text()
+    assert "Config:" in md or "## Config" in md
+    assert "Hi there" in md
+    assert "One two three" in md
+    assert "recommendation" in md.lower()
 
 
 @respx.mock
-async def test_end_to_end_import_flow(tmp_path: Path) -> None:
+async def test_end_to_end_parse_flow(tmp_path: Path) -> None:
     respx.post(BASE_URL).mock(
         return_value=Response(
             200,
@@ -94,25 +95,20 @@ async def test_end_to_end_import_flow(tmp_path: Path) -> None:
     client = LLMClient(base_url=BASE_URL)
     await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
 
-    results = json.loads((run_dir / "raw_data.json").read_text())
-    configs: list[dict] = []
-    for r in results:
-        if r["config"] not in configs:
-            configs.append(r["config"])
-    scores = [
-        {"config": config_key(configs[0]), "test_id": "t1", "repetition": 1, "scores": {"overall": 9.0}},
-        {"config": config_key(configs[0]), "test_id": "t2", "repetition": 1, "scores": {"overall": 8.0}},
-        {"config": config_key(configs[1]), "test_id": "t1", "repetition": 1, "scores": {"overall": 4.0}},
-        {"config": config_key(configs[1]), "test_id": "t2", "repetition": 1, "scores": {"overall": 3.0}},
-    ]
-    scores_path = run_dir / "scores.json"
-    scores_path.write_text(json.dumps(scores))
-
-    ranking = import_scores(run_dir, scores_path, weight_quality=0.5)
-    assert len(ranking) == 2
-    # configs[0] has higher quality -> should rank first at w=0.5
-    assert ranking[0].config == config_key(configs[0])
-    assert ranking[0].norm_quality == pytest.approx(1.0)
+    # Simulate a judge reply with "conclude" recommendation
+    judge_reply = """Based on my analysis:
+{
+    "scores": {
+        "{\\"temperature\\": 0.1}": {"overall": 8, "reasoning": "Good balance"},
+        "{\\"temperature\\": 0.2}": {"overall": 6, "reasoning": "Slightly worse"}
+    },
+    "recommendation": "conclude",
+    "confidence": "high",
+    "reasoning": "Temperature 0.1 is clearly the best configuration.",
+    "refinement_hint": null
+}"""
+    # Should not raise
+    parse_and_act(judge_reply)
 
 
 @respx.mock
@@ -120,7 +116,7 @@ async def test_end_to_end_server_error(tmp_path: Path) -> None:
     respx.post(BASE_URL).mock(return_value=Response(500, content="internal error"))
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
-    results = await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
+    results, _ = await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
     # all attempts failed after retries -> recorded as failures
     assert len(results) == 4
     assert all(r.error for r in results)

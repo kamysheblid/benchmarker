@@ -1,0 +1,8 @@
+{
+  "id": "test_generation",
+  "prompt": "You are a testing assistant. Generate comprehensive unit tests for the following function using pytest. Include tests for normal cases, edge cases (empty list, single element), and error conditions. Output only the test code with no explanation.\n\nFunction to test:\ndef divide_list(items, divisor):\n    \"\"\"Divide each element in items by divisor. Raises ZeroDivisionError if divisor is 0.\"\"\"\n    if divisor == 0:\n        raise ZeroDivisionError(\"divisor cannot be zero\")\n    return [item / divisor for item in items]",
+  "max_tokens": 2048,
+  "repeat": 5,
+  "reasoning": false,
+  "stop": ["\ndef ", "\nclass "]
+}

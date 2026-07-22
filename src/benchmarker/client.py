@@ -20,6 +20,18 @@ class LLMClientError(Exception):
     """Raised when the LLM endpoint returns an error or times out."""
 
 
+class TransientError(LLMClientError):
+    """Transient failure (network timeout, connection reset)."""
+
+
+class ClientError(LLMClientError):
+    """Client-side error (HTTP 4xx)."""
+
+
+class ServerError(LLMClientError):
+    """Server-side error (HTTP 5xx)."""
+
+
 class CompletionResult(BaseModel):
     """Metrics and text captured from a single completion request."""
 
@@ -63,7 +75,7 @@ class LLMClient:
         Args:
             messages: Chat messages in OpenAI format.
             model: Model name to query.
-            **params: Sampling parameters (temperature, top_k, ...) forwarded to
+            **params: Sampling parameters (temperature, top_k, stop, ...) forwarded to
                 the endpoint.
 
         Returns:
@@ -96,10 +108,14 @@ class LLMClient:
                 ) as response:
                     if response.status_code >= 400:
                         body = await response.aread()
-                        raise LLMClientError(
-                            f"LLM endpoint returned {response.status_code}: "
+                        status = response.status_code
+                        msg = (
+                            f"LLM endpoint returned {status}: "
                             f"{body.decode('utf-8', 'replace')[:200]}"
                         )
+                        if 500 <= status < 600:
+                            raise ServerError(msg)
+                        raise ClientError(msg)
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
                             continue
@@ -133,7 +149,7 @@ class LLMClient:
                                     ttft = time.monotonic() - start
                                 reasoning_parts.append(reasoning)
         except httpx.HTTPError as exc:  # timeout, connect error, etc.
-            raise LLMClientError(f"Request to LLM endpoint failed: {exc}") from exc
+            raise TransientError(f"Request to LLM endpoint failed: {exc}") from exc
 
         total_time = time.monotonic() - start
         if ttft == 0.0:  # no tokens streamed

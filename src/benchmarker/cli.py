@@ -2,6 +2,8 @@
 
 import asyncio
 import csv
+import json
+import shutil
 from pathlib import Path
 
 import click
@@ -10,9 +12,16 @@ from rich.progress import Progress
 from rich.table import Table
 
 from benchmarker.client import LLMClient
-from benchmarker.config import load_params, load_params_default, load_tests, load_tests_default
-from benchmarker.importer import import_scores
+from benchmarker.config import (
+    discover_categories,
+    load_params,
+    load_params_default,
+    load_tests,
+    load_tests_default,
+    load_tests_from_dir,
+)
 from benchmarker.optimizers import create_optimizer
+from benchmarker.parse_judge import parse_and_act
 from benchmarker.runner import ProgressReporter, Runner, config_key
 
 console = Console()
@@ -24,15 +33,132 @@ def main() -> None:
     """benchmarker - find optimal LLM sampling parameters."""
 
 
+_CATEGORY_MAP = {
+    "coding_chunk": "code-generation",
+    "algorithmic_palindrome": "code-generation",
+    "algorithmic_twosum": "code-generation",
+    "algorithmic_bst": "code-generation",
+    "bugfixing": "bug-fixing",
+    "refactoring": "refactoring",
+    "explanation_sql": "security-vulnerability",
+    "explanation_complexity": "comment-generation",
+    "integration_api": "api-integration",
+    "test_generation": "test-generation",
+    "creative": "general",
+    "reasoning": "general",
+    "factual": "general",
+}
+
+
+# ------------------------------------------------------------------ #
+#  init                                                               #
+# ------------------------------------------------------------------ #
+@main.command()
+@click.option(
+    "--dir",
+    "target_dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Directory to initialise with default config files.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing files.",
+)
+def init(target_dir: Path, force: bool) -> None:
+    """Create default config files (benchmarks/, params.yaml) in the given directory."""
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    benchmarks_dest = target_dir / "benchmarks"
+    params_dest = target_dir / "params.yaml"
+
+    copied = []
+
+    if not benchmarks_dest.exists() or force:
+        if force and benchmarks_dest.exists():
+            shutil.rmtree(benchmarks_dest)
+        benchmarks_dest.mkdir(parents=True, exist_ok=True)
+
+        suite = load_tests_default()
+        counters: dict[str, int] = {}
+        for test in suite.tests:
+            category = _CATEGORY_MAP.get(test.id, "general")
+            counters[category] = counters.get(category, 0) + 1
+            cat_dir = benchmarks_dest / category
+            cat_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{counters[category]:03d}-{test.id}.json"
+            filepath = cat_dir / filename
+            filepath.write_text(
+                json.dumps(test.model_dump(exclude_none=True), indent=2),
+                encoding="utf-8",
+            )
+        copied.append(benchmarks_dest)
+    else:
+        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
+
+    if not params_dest.exists() or force:
+        params = load_params_default()
+        import yaml
+
+        raw = {
+            "optimizer": {"type": params.optimizer.type, "budget": params.optimizer.budget},
+            "parameters": [
+                {
+                    "name": p.name,
+                    "type": p.type.value,
+                    "low": p.low,
+                    "high": p.high,
+                    "step": p.step,
+                    "choices": p.choices,
+                }
+                for p in params.parameters
+            ],
+            "static_params": params.static_params,
+        }
+        params_dest.write_text(yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8")
+        copied.append(params_dest)
+    else:
+        click.echo(f"  (skip) {params_dest} already exists — use --force to overwrite.")
+
+    if copied:
+        for f in copied:
+            click.echo(f"  created {f}")
+    else:
+        click.echo("  All files already exist. Nothing to do.")
+
+
+# ------------------------------------------------------------------ #
+#  run                                                                #
+# ------------------------------------------------------------------ #
+def _parse_categories(ctx, param, value):
+    if value is None:
+        return None
+    slugs = [s.strip() for s in value.split(",")]
+    bad = [s for s in slugs if not s]
+    if bad:
+        raise click.BadParameter(f"Empty category slugs are not allowed: {bad}")
+    return slugs
+
+
 @main.command()
 @click.option("--model", default="default", show_default=True, help="Model name to benchmark.")
 @click.option(
     "--tests",
     "tests_path",
-    default="tests.json",
+    default="benchmarks",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Path to the test suite JSON file (falls back to bundled default if missing).",
+    help="Path to the test suite JSON file or benchmarks/ directory (falls back to bundled default if missing).",
+)
+@click.option(
+    "--categories",
+    default=None,
+    callback=_parse_categories,
+    help="Comma-separated list of category slugs to load (directory mode only).",
 )
 @click.option(
     "--params",
@@ -54,7 +180,7 @@ def main() -> None:
     default=Path("benchmark_runs/latest"),
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Directory to store raw results and the eval file.",
+    help="Directory to store raw results and the judge prompt file.",
 )
 @click.option(
     "--csv",
@@ -63,19 +189,66 @@ def main() -> None:
     type=click.Path(path_type=Path),
     help="Optional path to export the speed ranking as CSV.",
 )
+@click.option(
+    "--auto-eval/--no-auto-eval",
+    "auto_eval",
+    default=False,
+    help="Run automated code evaluation on responses (scoring rubric with unit tests, static analysis).",
+)
+@click.option(
+    "--cost-per-1m-input",
+    default=0.0,
+    type=float,
+    show_default=True,
+    help="USD cost per 1M input tokens (for cost tracking in ranking).",
+)
+@click.option(
+    "--cost-per-1m-output",
+    default=0.0,
+    type=float,
+    show_default=True,
+    help="USD cost per 1M output tokens (for cost tracking in ranking).",
+)
+@click.option(
+    "--seed",
+    default=None,
+    type=int,
+    help="Random seed for deterministic sampling (applied to optimizer).",
+)
 def run(
     model: str,
     tests_path: Path,
+    categories: list[str] | None,
     params_path: Path,
     url: str | None,
     run_dir: Path,
     csv_path: Path | None,
+    auto_eval: bool,
+    cost_per_1m_input: float,
+    cost_per_1m_output: float,
+    seed: int | None,
 ) -> None:
     """Run a benchmark for the given model."""
     click.echo(f"Hello, world — benchmarking model: {model}")
 
     if tests_path.exists():
-        suite = load_tests(tests_path)
+        if tests_path.is_file():
+            if categories is not None:
+                raise click.BadParameter(
+                    "--categories is only valid when --tests is a directory (benchmarks/). "
+                    "For flat test files, omit --categories."
+                )
+            suite = load_tests(tests_path)
+        else:
+            valid_categories = discover_categories(tests_path)
+            if categories is not None:
+                invalid = [c for c in categories if c not in valid_categories]
+                if invalid:
+                    raise click.BadParameter(
+                        f"Invalid categories: {', '.join(invalid)}. "
+                        f"Valid categories: {', '.join(valid_categories)}"
+                    )
+            suite = load_tests_from_dir(tests_path, categories=categories)
     else:
         click.echo(f"(no {tests_path} found — using bundled default test suite)")
         suite = load_tests_default()
@@ -91,7 +264,7 @@ def run(
     )
 
     client = LLMClient(base_url=url) if url else LLMClient()
-    optimizer = create_optimizer(params.optimizer, params.parameters)
+    optimizer = create_optimizer(params.optimizer, params.parameters, seed=seed)
     reporter = _RichProgress()
     runner = Runner(
         client,
@@ -101,74 +274,79 @@ def run(
         run_dir,
         progress=reporter,
         static_params=params.static_params,
+        auto_eval=auto_eval,
+        cost_per_1m_input=cost_per_1m_input,
+        cost_per_1m_output=cost_per_1m_output,
     )
-    results = asyncio.run(runner.run())
+    results, auto_scores = asyncio.run(runner.run())
 
     _print_speed_table(results)
     if csv_path:
         _write_speed_csv(csv_path, results)
         click.echo(f"Exported speed ranking CSV to {csv_path}")
 
+    if auto_scores:
+        _print_auto_eval_summary(results, auto_scores)
+        click.echo(f"\nSaved auto-evaluation scores to {run_dir / 'scores_auto.json'}")
+
     click.echo(f"\nSaved raw results to {run_dir / 'raw_data.json'}")
-    click.echo(f"Saved evaluation file to {run_dir / 'eval_output.md'}")
-    click.echo("Copy that file's content to a judge LLM, then run `import-scores`.")
+    click.echo(f"Saved judge prompt to {run_dir / 'judge_prompt.md'}")
+    click.echo(
+        "\nNext step: copy the contents of judge_prompt.md to your judge LLM,\n"
+        "save the reply as a text file, then run:\n"
+        f"  benchmarker parse <reply_file> --run-dir {run_dir}"
+    )
 
 
-@main.command(name="import-scores")
-@click.argument("scores_path", type=click.Path(path_type=Path, exists=True))
+# ------------------------------------------------------------------ #
+#  parse                                                              #
+# ------------------------------------------------------------------ #
+@main.command()
+@click.argument("reply_file", type=click.Path(path_type=Path), required=False)
+@click.option(
+    "--params",
+    "params_path",
+    default="params.yaml",
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Path to the parameter YAML to update when refining.",
+)
 @click.option(
     "--run-dir",
     "run_dir",
-    default=Path("benchmark_runs/latest"),
-    show_default=True,
-    type=click.Path(path_type=Path),
-    help="Directory containing raw_data.json from a previous run.",
-)
-@click.option(
-    "--weight-quality",
-    default=0.5,
-    show_default=True,
-    type=float,
-    help="Weight (0..1) of quality vs speed in the combined score.",
-)
-@click.option(
-    "--csv",
-    "csv_path",
     default=None,
     type=click.Path(path_type=Path),
-    help="Optional path to export the ranking as CSV.",
+    help="Run directory to load config_map.json from for config lookup.",
 )
-def import_scores_cmd(
-    scores_path: Path,
-    run_dir: Path,
-    weight_quality: float,
-    csv_path: Path | None,
-) -> None:
-    """Compute the final ranking from a judge SCORES_PATH."""
-    ranking = import_scores(run_dir, scores_path, weight_quality=weight_quality)
+def parse(reply_file: Path | None, params_path: Path, run_dir: Path | None) -> None:
+    """Parse the judge's reply and take action (conclude / refine / expand).
 
-    table = Table(title="Final Benchmark Ranking")
-    table.add_column("Config", overflow="fold")
-    table.add_column("Avg Quality", justify="right")
-    table.add_column("Avg Tok/s", justify="right")
-    table.add_column("Combined", justify="right")
-    for item in ranking:
-        table.add_row(
-            item.config,
-            f"{item.avg_quality:.2f}",
-            f"{item.avg_speed:.2f}",
-            f"{item.combined:.3f}",
-        )
-    console.print(table)
+    If REPLY_FILE is provided, read it; otherwise read from stdin.
+    """
+    if reply_file:
+        if not reply_file.exists():
+            click.echo(f"Error: file not found: {reply_file}", err=True)
+            raise SystemExit(1)
+        text = reply_file.read_text(encoding="utf-8")
+        click.echo(f"Read judge reply from {reply_file}")
+    else:
+        click.echo("Reading judge reply from stdin (paste the reply and press Ctrl+D)...")
+        import sys
 
-    if csv_path:
-        _write_csv(csv_path, ranking)
-        click.echo(f"Exported ranking CSV to {csv_path}")
+        text = sys.stdin.read()
+
+    try:
+        parse_and_act(text, params_path=params_path, run_dir=run_dir)
+    except ValueError as exc:
+        click.echo(f"Error parsing judge reply: {exc}", err=True)
+        click.echo("\nRaw text received:", err=True)
+        click.echo(text[:1000], err=True)
+        raise SystemExit(1) from exc
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+#  Helpers                                                            #
+# ------------------------------------------------------------------ #
 class _RichProgress(ProgressReporter):
     def __init__(self) -> None:
         self._progress = Progress(transient=True)
@@ -188,19 +366,31 @@ class _RichProgress(ProgressReporter):
 
 def _print_speed_table(results: list) -> None:
     speeds: dict[str, list[float]] = {}
+    costs: dict[str, list[float]] = {}
     for r in results:
         if r.error is None:
-            speeds.setdefault(config_key(r.config), []).append(r.tokens_per_sec)
+            k = config_key(r.config)
+            speeds.setdefault(k, []).append(r.tokens_per_sec)
+            costs.setdefault(k, []).append(r.cost_estimate)
     ranking = sorted(
         ((k, sum(v) / len(v)) for k, v in speeds.items()),
         key=lambda x: x[1],
         reverse=True,
     )[:5]
+
+    has_costs = any(any(c > 0 for c in cv) for cv in costs.values())
+
     table = Table(title="Top Configs by tokens/s (speed only)")
     table.add_column("Config", overflow="fold")
     table.add_column("Avg Tok/s", justify="right")
+    if has_costs:
+        table.add_column("Avg Cost/Req", justify="right")
     for cfg_key, speed in ranking:
-        table.add_row(cfg_key, f"{speed:.2f}")
+        avg_cost = sum(costs.get(cfg_key, [0])) / len(costs.get(cfg_key, [1])) if costs.get(cfg_key) else 0
+        row = [cfg_key, f"{speed:.2f}"]
+        if has_costs:
+            row.append(f"${avg_cost:.8f}")
+        table.add_row(*row)
     console.print(table)
 
 
@@ -216,21 +406,29 @@ def _write_speed_csv(path: Path, results: list) -> None:
             writer.writerow([cfg_key, sum(vals) / len(vals)])
 
 
-def _write_csv(path: Path, ranking: list) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["config", "avg_quality", "avg_speed", "norm_quality", "norm_speed", "combined"])
-        for item in ranking:
-            writer.writerow(
-                [
-                    item.config,
-                    item.avg_quality,
-                    item.avg_speed,
-                    item.norm_quality,
-                    item.norm_speed,
-                    item.combined,
-                ]
-            )
+def _print_auto_eval_summary(results: list, auto_scores: dict) -> None:
+    """Print a summary table of auto-evaluation scores grouped by config."""
+    per_config: dict[str, list[float]] = {}
+    for r in results:
+        if r.error is not None:
+            continue
+        ck = config_key(r.config)
+        key = f"{ck}::{r.test_id}::{r.repetition}"
+        if key in auto_scores:
+            overall = auto_scores[key].get("overall", 0.0)
+            per_config.setdefault(ck, []).append(overall)
+
+    table = Table(title="Auto-Evaluation: Top Configs by Code Quality")
+    table.add_column("Config", overflow="fold")
+    table.add_column("Avg Quality Score", justify="right")
+    ranking = sorted(
+        ((k, sum(v) / len(v)) for k, v in per_config.items()),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:5]
+    for cfg_key, avg_q in ranking:
+        table.add_row(cfg_key, f"{avg_q:.3f}")
+    console.print(table)
 
 
 if __name__ == "__main__":

@@ -15,3 +15,14 @@ benchmark_runs/
 # Tooling state
 .hive/
 .hive2/
+
+# Runtime / user-generated artifacts
+judge.json
+params.yaml
+tests.json
+benchmarks/
+uv.lock
+*.md
+!README.md
+!PLANS.md
+quick_run/

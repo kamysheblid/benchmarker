@@ -9,9 +9,12 @@ import respx
 from httpx import Response
 
 from benchmarker.client import (
+    ClientError,
     CompletionResult,
     LLMClient,
     LLMClientError,
+    ServerError,
+    TransientError,
 )
 
 BASE_URL = "http://localhost:8080/v1/chat/completions"
@@ -123,3 +126,55 @@ async def test_complete_passes_params_and_auth() -> None:
     assert payload["top_k"] == 40
     # ensure kwargs do not include reserved keys
     assert "messages" in payload and "model" in payload
+
+
+@respx.mock
+async def test_complete_passes_stop_sequence() -> None:
+    route = respx.post(BASE_URL).mock(
+        return_value=Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_stream_body(
+                ["ok"], {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            ),
+        )
+    )
+    client = LLMClient(base_url=BASE_URL)
+    await client.complete(
+        messages=[{"role": "user", "content": "x"}], model="m", stop=["\n```", "\ndef "]
+    )
+    assert route.called
+    request = route.calls.last.request
+    import json
+
+    payload = json.loads(request.content)
+    assert payload["stop"] == ["\n```", "\ndef "]
+
+
+@respx.mock
+async def test_complete_http_400_raises_client_error() -> None:
+    respx.post(BASE_URL).mock(return_value=Response(400, content="bad request"))
+    client = LLMClient(base_url=BASE_URL)
+    with pytest.raises(ClientError):
+        await client.complete(messages=[{"role": "user", "content": "x"}], model="m")
+
+
+@respx.mock
+async def test_complete_http_500_raises_server_error() -> None:
+    respx.post(BASE_URL).mock(return_value=Response(500, content="server error"))
+    client = LLMClient(base_url=BASE_URL)
+    with pytest.raises(ServerError):
+        await client.complete(messages=[{"role": "user", "content": "x"}], model="m")
+
+
+@respx.mock
+async def test_complete_timeout_raises_transient_error() -> None:
+    import httpx as _httpx
+
+    def _slow(request, **kwargs):
+        raise _httpx.ConnectTimeout("timed out")
+
+    respx.post(BASE_URL).mock(side_effect=_slow)
+    client = LLMClient(base_url=BASE_URL, timeout=0.01)
+    with pytest.raises(TransientError):
+        await client.complete(messages=[{"role": "user", "content": "x"}], model="m")

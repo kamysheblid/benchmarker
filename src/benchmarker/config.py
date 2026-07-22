@@ -81,8 +81,12 @@ class OptimizerConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["bayesian", "grid", "random"] = "bayesian"
+    type: Literal["bayesian", "grid", "random", "baseline_sweep"] = "bayesian"
     budget: PositiveInt = 20
+    # Baseline parameter values for "baseline_sweep" (ablation) studies.
+    # When set, the sweep varies one parameter at a time while holding the
+    # others at these baseline values.
+    baseline: dict[str, Any] = Field(default_factory=dict)
 
 
 class ParamsConfig(BaseModel):
@@ -110,6 +114,8 @@ class TestCase(BaseModel):
     system: str | None = None
     max_tokens: PositiveInt | None = None
     repeat: int = 1
+    stop: list[str] | None = None
+    reasoning: bool | None = None  # True = encourage CoT, False = discourage, None = default
 
     def model_post_init(self, _context: Any) -> None:
         if not self.prompt.strip():
@@ -133,6 +139,7 @@ class TestSuite(BaseModel):
     __test__ = False  # prevent pytest from collecting this Pydantic model as a test suite
 
     tests: list[TestCase] = Field(default_factory=list)
+    categories: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("tests")
     @classmethod
@@ -143,6 +150,45 @@ class TestSuite(BaseModel):
                 raise ValueError(f"duplicate test id: {tc.id!r}")
             seen.add(tc.id)
         return tests
+
+
+def validate_params(config: ParamsConfig) -> None:
+    """Validate the search space before any benchmark starts.
+
+    Checks:
+    - ``low <= high`` for every numeric parameter.
+    - ``step > 0`` when ``step`` is provided.
+    - ``step <= high - low`` when ``step`` is provided.
+    - ``budget >= 1``.
+
+    Raises:
+        ValueError: with an actionable message on the first violation found.
+    """
+    if config.optimizer.budget < 1:
+        raise ValueError(f"budget must be >= 1, got {config.optimizer.budget}")
+    for spec in config.parameters:
+        if spec.type is ParameterType.CATEGORICAL:
+            continue
+        low = spec.low
+        high = spec.high
+        if low is None or high is None:
+            continue
+        if low > high:
+            raise ValueError(
+                f"parameter '{spec.name}': low ({low}) must be <= high ({high})"
+            )
+        if spec.step is not None:
+            step = spec.step
+            if step <= 0:
+                raise ValueError(
+                    f"parameter '{spec.name}': step must be > 0, got {step}"
+                )
+            range_size = high - low
+            if step > range_size:
+                raise ValueError(
+                    f"parameter '{spec.name}': step ({step}) must be <= "
+                    f"high - low ({range_size})"
+                )
 
 
 def load_params(path: Path) -> ParamsConfig:
@@ -156,7 +202,9 @@ def load_params(path: Path) -> ParamsConfig:
     if not path.exists():
         raise FileNotFoundError(f"Parameter config not found: {path}")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return ParamsConfig.model_validate(raw)
+    config = ParamsConfig.model_validate(raw)
+    validate_params(config)
+    return config
 
 
 def load_tests(path: Path) -> TestSuite:
@@ -177,14 +225,93 @@ def load_tests(path: Path) -> TestSuite:
     return TestSuite(tests=raw)
 
 
+def discover_categories(path: Path) -> list[str]:
+    """Return sorted category slugs found under *path*.
+
+    A category is any immediate subdirectory of *path*.
+    """
+    path = Path(path)
+    if not path.is_dir():
+        return []
+    return sorted(
+        p.name for p in path.iterdir() if p.is_dir()
+    )
+
+
+def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> TestSuite:
+    """Load benchmark prompts from a category directory structure.
+
+    Each immediate subdirectory of *path* is treated as a category slug.
+    JSON files are searched recursively within each category directory so
+    subdirectories (e.g. ``forager/implementation/``) are supported.
+    Files are processed in sorted order so numeric prefixes control
+    sequencing.
+
+    Empty category directories are skipped silently.
+
+    Args:
+        path: Root directory containing category subdirectories.
+        categories: Optional allow-list of category slugs (exact, case-sensitive).
+
+    Returns:
+        A :class:`TestSuite` containing every loaded test case.
+
+    Raises:
+        ValueError: If duplicate test IDs are found across categories.
+        ValidationError: If any JSON file is not a valid :class:`TestCase`.
+    """
+    path = Path(path)
+    if not path.is_dir():
+        raise FileNotFoundError(f"Benchmark directory not found: {path}")
+
+    if categories is not None:
+        available = set(discover_categories(path))
+        unknown = set(categories) - available
+        if unknown:
+            raise ValueError(f"unknown category(s): {', '.join(sorted(unknown))}")
+
+    seen: set[str] = set()
+    tests: list[dict[str, Any]] = []
+    category_map: dict[str, str] = {}
+
+    for category in discover_categories(path):
+        if categories is not None and category not in categories:
+            continue
+        category_dir = path / category
+        json_files = sorted(category_dir.rglob("*.json"))
+        if not json_files:
+            continue
+        for json_file in json_files:
+            raw = json.loads(json_file.read_text(encoding="utf-8"))
+            # Support wrapped {"tests": [...]} or bare test-case dict/list
+            if isinstance(raw, dict):
+                items = raw.get("tests", [raw])
+            else:
+                items = raw
+            for item in items:
+                tc_id = item.get("id")
+                if tc_id in seen:
+                    raise ValueError(f"duplicate test id: {tc_id!r}")
+                seen.add(tc_id)
+                tests.append(item)
+                category_map[tc_id] = category
+
+    return TestSuite(tests=tests, categories=category_map)
+
+
 def load_params_default() -> ParamsConfig:
     """Load the bundled default parameter search space."""
-    return _load_bundled("params.default.yaml", load_params)
+    config = _load_bundled("params.default.yaml", load_params)
+    return config
 
 
 def load_tests_default() -> TestSuite:
     """Load the bundled default test suite."""
-    return _load_bundled("tests.default.json", load_tests)
+    from importlib import resources
+
+    ref = resources.files("benchmarker.defaults").joinpath("benchmarks")
+    with resources.as_file(ref) as path:
+        return load_tests_from_dir(path)
 
 
 def _load_bundled(name: str, loader: Callable[[Path], Any]) -> Any:
