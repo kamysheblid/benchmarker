@@ -7,17 +7,25 @@ response text while consuming a streamed (SSE) response.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_BASE_URL = "http://localhost:8080/v1/chat/completions"
 
 
 class LLMClientError(Exception):
     """Raised when the LLM endpoint returns an error or times out."""
+
+    def __init__(self, message: str, context: dict | None = None) -> None:
+        self.context = context or {}
+        super().__init__(message)
 
 
 class TransientError(LLMClientError):
@@ -113,9 +121,16 @@ class LLMClient:
                             f"LLM endpoint returned {status}: "
                             f"{body.decode('utf-8', 'replace')[:200]}"
                         )
+                        context = {
+                            "url": self.base_url,
+                            "model": model,
+                            "status": status,
+                            "body_preview": body.decode("utf-8", "replace")[:200],
+                        }
+                        logger.error("LLM error: %s", msg, extra=context)
                         if 500 <= status < 600:
-                            raise ServerError(msg)
-                        raise ClientError(msg)
+                            raise ServerError(msg, context=context)
+                        raise ClientError(msg, context=context)
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
                             continue
@@ -149,7 +164,13 @@ class LLMClient:
                                     ttft = time.monotonic() - start
                                 reasoning_parts.append(reasoning)
         except httpx.HTTPError as exc:  # timeout, connect error, etc.
-            raise TransientError(f"Request to LLM endpoint failed: {exc}") from exc
+            context = {
+                "url": self.base_url,
+                "model": model,
+                "timeout": self.timeout,
+            }
+            logger.error("Transient LLM error: %s", exc, extra=context)
+            raise TransientError(f"Request to LLM endpoint failed: {exc}", context=context) from exc
 
         total_time = time.monotonic() - start
         if ttft == 0.0:  # no tokens streamed

@@ -27,23 +27,43 @@ def _write_configs(tmp_path: Path) -> tuple[Path, Path]:
     return tests, params
 
 
-def test_run_prints_model(tmp_path: Path) -> None:
+def test_run_prints_model(tmp_path: Path, monkeypatch) -> None:
     """`benchmarker run --model <name>` should echo the model name."""
+    from benchmarker import cli
+
+    class _NoopRunner:
+        def __init__(self, *a, **k):
+            self.model_name = k.get("model_name")
+
+        async def run(self):
+            return [], None
+
     tests, params = _write_configs(tmp_path)
+    monkeypatch.setattr(cli, "Runner", _NoopRunner)
     runner = CliRunner()
     result = runner.invoke(
-        main, ["run", "--model", "test-model", "--tests", str(tests), "--params", str(params)]
+        main, ["run", "--model", "test-model", "--tests", str(tests), "--params", str(params), "--force"]
     )
     assert result.exit_code == 0
     assert "test-model" in result.output
 
 
-def test_run_default_executes(tmp_path: Path) -> None:
+def test_run_default_executes(tmp_path: Path, monkeypatch) -> None:
     """`benchmarker run` with valid files should load configs and exit 0."""
+    from benchmarker import cli
+
+    class _NoopRunner:
+        def __init__(self, *a, **k):
+            self.suite = k.get("suite")
+
+        async def run(self):
+            return [], None
+
     tests, params = _write_configs(tmp_path)
+    monkeypatch.setattr(cli, "Runner", _NoopRunner)
     runner = CliRunner()
     result = runner.invoke(
-        main, ["run", "--tests", str(tests), "--params", str(params)]
+        main, ["run", "--tests", str(tests), "--params", str(params), "--force"]
     )
     assert result.exit_code == 0
     assert "1 tests" in result.output

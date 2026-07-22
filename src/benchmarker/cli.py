@@ -3,7 +3,9 @@
 import asyncio
 import csv
 import json
+import logging
 import shutil
+import sys
 from pathlib import Path
 
 import click
@@ -20,11 +22,13 @@ from benchmarker.config import (
     load_tests_default,
     load_tests_from_dir,
 )
+from benchmarker.logging import setup_logging
 from benchmarker.optimizers import create_optimizer
 from benchmarker.parse_judge import parse_and_act
 from benchmarker.runner import ProgressReporter, Runner, config_key
 
 console = Console()
+logger = logging.getLogger("benchmarker")
 
 
 @click.group()
@@ -215,6 +219,24 @@ def _parse_categories(ctx, param, value):
     type=int,
     help="Random seed for deterministic sampling (applied to optimizer).",
 )
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Enable debug-level console logging.",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Resume from an existing checkpoint if present.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Ignore any existing checkpoint and start fresh.",
+)
 def run(
     model: str,
     tests_path: Path,
@@ -227,9 +249,13 @@ def run(
     cost_per_1m_input: float,
     cost_per_1m_output: float,
     seed: int | None,
+    verbose: bool,
+    resume: bool,
+    force: bool,
 ) -> None:
     """Run a benchmark for the given model."""
-    click.echo(f"Hello, world — benchmarking model: {model}")
+    setup_logging(run_dir=run_dir, verbose=verbose)
+    logger.info("Starting benchmark: model=%s, tests=%s, params=%s, run_dir=%s", model, tests_path, params_path, run_dir)
 
     if tests_path.exists():
         if tests_path.is_file():
@@ -250,17 +276,20 @@ def run(
                     )
             suite = load_tests_from_dir(tests_path, categories=categories)
     else:
-        click.echo(f"(no {tests_path} found — using bundled default test suite)")
+        logger.info("(no %s found — using bundled default test suite)", tests_path)
         suite = load_tests_default()
     if params_path.exists():
         params = load_params(params_path)
     else:
-        click.echo(f"(no {params_path} found — using bundled default params)")
+        logger.info("(no %s found — using bundled default params)", params_path)
         params = load_params_default()
 
-    click.echo(
-        f"Loaded {len(suite.tests)} tests and {len(params.parameters)} parameters "
-        f"(optimizer={params.optimizer.type}, budget={params.optimizer.budget})."
+    logger.info(
+        "Loaded %d tests and %d parameters (optimizer=%s, budget=%d).",
+        len(suite.tests),
+        len(params.parameters),
+        params.optimizer.type,
+        params.optimizer.budget,
     )
 
     client = LLMClient(base_url=url) if url else LLMClient()
@@ -277,18 +306,24 @@ def run(
         auto_eval=auto_eval,
         cost_per_1m_input=cost_per_1m_input,
         cost_per_1m_output=cost_per_1m_output,
+        resume=resume,
+        force=force,
     )
     results, auto_scores = asyncio.run(runner.run())
 
     _print_speed_table(results)
     if csv_path:
         _write_speed_csv(csv_path, results)
+        logger.info("Exported speed ranking CSV to %s", csv_path)
         click.echo(f"Exported speed ranking CSV to {csv_path}")
 
     if auto_scores:
         _print_auto_eval_summary(results, auto_scores)
+        logger.info("Saved auto-evaluation scores to %s", run_dir / "scores_auto.json")
         click.echo(f"\nSaved auto-evaluation scores to {run_dir / 'scores_auto.json'}")
 
+    logger.info("Saved raw results to %s", run_dir / "raw_data.json")
+    logger.info("Saved judge prompt to %s", run_dir / "judge_prompt.md")
     click.echo(f"\nSaved raw results to {run_dir / 'raw_data.json'}")
     click.echo(f"Saved judge prompt to {run_dir / 'judge_prompt.md'}")
     click.echo(

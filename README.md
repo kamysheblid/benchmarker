@@ -406,6 +406,65 @@ for agent in hive architect swarm scout forager hygienic; do
 done
 ```
 
+## Logging & Resilience
+
+### Structured logs
+
+Every benchmark run writes a `benchmarker.log` file inside the run directory:
+
+```text
+benchmark_runs/
+└── latest/
+    ├── benchmarker.log      # detailed logs (DEBUG+)
+    ├── checkpoint.json      # resume checkpoint
+    ├── error_report.json    # generated on failure (if any)
+    ├── raw_data.json
+    ├── judge_prompt.md
+    └── ...
+```
+
+Use `benchmarker.log` for debugging failed runs. Log levels:
+- `INFO` — normal progress and state transitions.
+- `DEBUG` — detailed retry, backoff, and streaming metrics (written to file always; console only with `--verbose`).
+- `ERROR` / `CRITICAL` — endpoint failures, circuit-breaker trips, I/O errors.
+
+### Verbose console output
+
+```bash
+benchmarker run --verbose --model my-model --url http://localhost:8080/v1/chat/completions
+```
+
+`--verbose` sets the console handler to `DEBUG` so you can see retry loops and backoff delays in real time.
+
+### Resume and force
+
+If a run is interrupted ( Ctrl+C, crash, power loss ), a `checkpoint.json` is left behind.
+
+```bash
+# Resume from the last checkpoint (skips already-completed configs)
+benchmarker run --resume --model my-model --url http://localhost:8080/v1/chat/completions
+
+# Discard the checkpoint and start fresh
+benchmarker run --force --model my-model --url http://localhost:8080/v1/chat/completions
+```
+
+If you run `benchmarker run` without either flag and a checkpoint exists:
+- In an interactive terminal, you are prompted to resume or start fresh.
+- In a non-interactive environment (CI, SSH without TTY), the command aborts with a message instructing you to use `--resume` or `--force`.
+
+### Error reports
+
+When a run ends with errors, an `error_report.json` is saved to the run directory. The report contains:
+
+- Total error count and breakdown by exception type.
+- First and last error messages.
+- Request context (URL, model, timeout, HTTP status) when available.
+- Heuristic recommendations (e.g., "High server error rate—check server health", "Circuit breaker tripped—endpoint may be down").
+
+### Circuit breaker
+
+The runner wraps LLM calls in a circuit breaker. After 5 consecutive `TransientError` / `ServerError` failures, the breaker opens and stops new requests. When the endpoint is healthy again, the breaker automatically transitions to `half_open` after 60 seconds, then back to `closed` on the next successful call.
+
 ## Tests
 
 ```bash

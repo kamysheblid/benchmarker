@@ -49,7 +49,7 @@ async def test_runner_call_count_and_saving(tmp_path: Path) -> None:
     specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.2, step=0.1)]
     optimizer = GridOptimizer(specs)
     client = _FakeClient()
-    runner = Runner(client, _tiny_suite(), optimizer, "m", tmp_path / "run")
+    runner = Runner(client, _tiny_suite(), optimizer, "m", tmp_path / "run", enable_health_check=False)
     results, _ = await runner.run()
 
     assert len(client.calls) == 6  # 2 trials * (1 + 2 reps)
@@ -63,7 +63,8 @@ async def test_runner_feeds_speed_to_bayesian(tmp_path: Path) -> None:
     optimizer = BayesianOptimizer(_specs(), budget=2)
     client = _FakeClient()
     runner = Runner(
-        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
+        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run",
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 2
@@ -89,7 +90,8 @@ async def test_runner_records_failure_and_continues(tmp_path: Path) -> None:
     optimizer = GridOptimizer(specs)
     client = _FlakyClient()
     runner = Runner(
-        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
+        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run",
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -105,7 +107,8 @@ async def test_runner_persistent_failure_records_error(tmp_path: Path) -> None:
     optimizer = GridOptimizer(specs)
     client = _AlwaysFails()
     runner = Runner(
-        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run"
+        client, TestSuite(tests=[TestCase(id="t1", prompt="x")]), optimizer, "m", tmp_path / "run",
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -140,6 +143,7 @@ async def test_runner_progress_reporter_called(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         progress=reporter,
+        enable_health_check=False,
     )
     await runner.run()
     # 2 trials * (1 + 2 reps) = 6 work units
@@ -159,6 +163,7 @@ async def test_runner_merges_static_params(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         static_params={"chat_template_kwargs": {"enable_thinking": False}},
+        enable_health_check=False,
     )
     await runner.run()
     # static params must be present in every call, alongside sampled params.
@@ -178,6 +183,7 @@ async def test_runner_passes_stop_sequence(tmp_path: Path) -> None:
         optimizer,
         "m",
         tmp_path / "run",
+        enable_health_check=False,
     )
     await runner.run()
     assert len(client.calls) == 1
@@ -235,6 +241,7 @@ async def test_runner_saves_optimizer_history(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         history_path=history_file,
+        enable_health_check=False,
     )
     await runner.run()
 
@@ -263,6 +270,7 @@ async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         history_path=history_file,
+        enable_health_check=False,
     )
     await runner.run()
 
@@ -303,6 +311,7 @@ async def test_runner_retries_transient_with_linear_backoff(tmp_path: Path) -> N
         "m",
         tmp_path / "run",
         max_retries=3,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -330,6 +339,7 @@ async def test_runner_fails_fast_on_client_error(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         max_retries=3,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -362,6 +372,7 @@ async def test_runner_retries_server_error_with_exponential_backoff(tmp_path: Pa
         "m",
         tmp_path / "run",
         max_retries=2,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -396,6 +407,7 @@ async def test_runner_computes_success_rate_and_coverage(tmp_path: Path) -> None
         "m",
         tmp_path / "run",
         max_retries=1,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     assert len(results) == 1
@@ -430,6 +442,7 @@ async def test_runner_tell_includes_success_rate_and_coverage(tmp_path: Path) ->
         optimizer,
         "m",
         tmp_path / "run",
+        enable_health_check=False,
     )
     await runner.run()
     assert len(optimizer.tell_calls) == 1
@@ -460,6 +473,7 @@ async def test_runner_circuit_breaker_trips_on_high_failure_rate(tmp_path: Path)
         "m",
         tmp_path / "run",
         max_retries=0,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     # t1 repeat=2 -> 2 attempts, both fail -> trip breaker -> t2 skipped
@@ -485,6 +499,7 @@ async def test_runner_circuit_breaker_sets_config_aborted_flag(tmp_path: Path) -
         "m",
         tmp_path / "run",
         max_retries=0,
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     # After circuit breaker trips, the second rep should have config_aborted
@@ -506,6 +521,7 @@ async def test_runner_two_phase_switches_after_phase1_budget(tmp_path: Path) -> 
         optimizer,
         "m",
         tmp_path / "run",
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     # 3 phase1 configs + adaptive phase2 configs (at least 1)
@@ -537,6 +553,7 @@ async def test_runner_two_phase_builds_phase2_from_best_coarse(tmp_path: Path) -
             optimizer,
             "m",
             tmp_path / "run",
+        enable_health_check=False,
         )
         await runner.run()
     finally:
@@ -578,6 +595,7 @@ async def test_runner_writes_refinement_hints_from_passing_configs(tmp_path: Pat
         tmp_path / "run",
         auto_eval=True,
         params_path=params_path,
+        enable_health_check=False,
     )
     _, auto_scores = await runner.run()
 
@@ -614,6 +632,7 @@ async def test_runner_excludes_auto_rejected_configs_from_hints(tmp_path: Path) 
         tmp_path / "run",
         auto_eval=True,
         params_path=params_path,
+        enable_health_check=False,
     )
     _, auto_scores = await runner.run()
 
@@ -637,6 +656,7 @@ async def test_runner_history_compacted_to_top_k(tmp_path: Path) -> None:
         "m",
         tmp_path / "run",
         history_path=history_file,
+        enable_health_check=False,
     )
     # Only 1 trial, so compaction keeps it
     await runner.run()
@@ -704,6 +724,7 @@ async def test_runner_logs_per_repeat_status(tmp_path: Path, caplog) -> None:
         optimizer,
         "m",
         tmp_path / "run",
+        enable_health_check=False,
     )
     with caplog.at_level("INFO", logger="benchmarker.runner"):
         await runner.run()
@@ -728,6 +749,7 @@ async def test_runner_logs_repeat_failure(tmp_path: Path, caplog) -> None:
         "m",
         tmp_path / "run",
         max_retries=0,
+        enable_health_check=False,
     )
     with caplog.at_level("INFO", logger="benchmarker.runner"):
         await runner.run()
@@ -754,6 +776,7 @@ async def test_runner_logs_circuit_breaker_trip(tmp_path: Path, caplog) -> None:
         "m",
         tmp_path / "run",
         max_retries=0,
+        enable_health_check=False,
     )
     with caplog.at_level("INFO", logger="benchmarker.runner"):
         await runner.run()
@@ -798,6 +821,7 @@ async def test_runner_sets_success_rate_and_coverage_on_results(tmp_path: Path) 
         optimizer,
         "m",
         tmp_path / "run",
+        enable_health_check=False,
     )
     results, _ = await runner.run()
     # 1 config x 2 tests = 2 results

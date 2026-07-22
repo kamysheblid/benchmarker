@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
+
+from benchmarker.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +26,8 @@ from benchmarker.param_validation import validate_sampling_params
 RAW_DATA_FILE = "raw_data.json"
 AUTO_EVAL_FILE = "scores_auto.json"
 OPTIMIZER_HISTORY_FILE = "optimizer_history.json"
+CHECKPOINT_FILE = "checkpoint.json"
+ERROR_REPORT_FILE = "error_report.json"
 
 
 class RunResult(BaseModel):
@@ -155,6 +161,10 @@ class Runner:
         cost_per_1m_output: float = 0.0,
         history_path: Path | None = None,
         params_path: Path | None = None,
+        resume: bool = False,
+        force: bool = False,
+        circuit_breaker: CircuitBreaker | None = None,
+        enable_health_check: bool = True,
     ) -> None:
         self.client = client
         self.test_suite = test_suite
@@ -170,9 +180,15 @@ class Runner:
         self.cost_per_1m_output = cost_per_1m_output
         self.history_path = history_path
         self.params_path = params_path
+        self.resume = resume
+        self.force = force
         self._history: list[OptimizerTrial] = []
         self._config_failures: dict[str, int] = {}
         self._config_attempts: dict[str, int] = {}
+        self._circuit_breaker = circuit_breaker or CircuitBreaker()
+        self._error_list: list[BaseException] = []
+        self._completed_configs: set[str] = set()
+        self._enable_health_check = enable_health_check
 
     async def run(self) -> tuple[list[RunResult], dict[str, Any] | None]:
         """Execute the full benchmark, returning and persisting all results.
@@ -182,7 +198,17 @@ class Runner:
             ``None`` when ``auto_eval`` is False.
         """
         self.run_dir.mkdir(parents=True, exist_ok=True)
-        results: list[RunResult] = []
+
+        # Handle existing checkpoint
+        existing_results = self._handle_checkpoint_on_start(self.resume, self.force)
+        results: list[RunResult] = [RunResult.model_validate(r) for r in existing_results]
+        self._completed_configs = {config_key(r.config) for r in results}
+        trial_index = 0
+
+        # Health check
+        if self._enable_health_check and not await self._health_check():
+            raise RuntimeError("Endpoint health check failed. Aborting.")
+
         per_trial = sum(t.repeat for t in self.test_suite.tests) or 1
         total_steps = self.optimizer.estimated_steps() * per_trial
         self.progress.start(total_steps)
@@ -196,98 +222,118 @@ class Runner:
                     getattr(self.optimizer, "seed", None),
                 )
 
-        trial_index = 0
-        while True:
-            try:
-                config = self.optimizer.suggest()
-            except StopIteration:
-                break
-
-            config_results: list[RunResult] = []
-            ckt = config_key(config)
-            config_aborted = False
-            for test in self.test_suite.tests:
-                if config_aborted:
+        try:
+            while True:
+                try:
+                    config = self.optimizer.suggest()
+                except StopIteration:
                     break
-                for rep in range(1, test.repeat + 1):
-                    result = await self._run_one(config, test, rep)
-                    results.append(result)
-                    config_results.append(result)
-                    self._config_attempts[ckt] = self._config_attempts.get(ckt, 0) + 1
-                    if result.error is not None:
-                        self._config_failures[ckt] = self._config_failures.get(ckt, 0) + 1
-                    logger.info(
-                        "repeat result: test=%s rep=%d status=%s error=%s",
-                        test.id,
-                        rep,
-                        "success" if result.error is None else "failure",
-                        result.error or "none",
-                    )
-                    if (
-                        self._config_attempts[ckt] >= 2
-                        and self._config_failures.get(ckt, 0) / self._config_attempts[ckt] > 0.8
-                    ):
-                        result.config_aborted = True
-                        config_aborted = True
-                        logger.info(
-                            "circuit breaker tripped for config %s after %d attempts (%d failures)",
-                            ckt,
-                            self._config_attempts[ckt],
-                            self._config_failures.get(ckt, 0),
-                        )
-                        break
-                    self.progress.advance()
+                ckt = config_key(config)
 
-            avg_speed = self._avg_speed(config_results)
-            successful_runs = sum(1 for r in config_results if r.error is None)
-            total_runs = len(config_results)
-            success_rate = successful_runs / total_runs if total_runs > 0 else 0.0
-            successful_test_ids = {r.test_id for r in config_results if r.error is None}
-            total_tests = len(self.test_suite.tests)
-            coverage = len(successful_test_ids) / total_tests if total_tests > 0 else 0.0
-            for r in config_results:
-                r.success_rate = success_rate
-                r.coverage = coverage
-            penalized_speed = avg_speed * success_rate
-            self.optimizer.tell({
-                "tokens_per_sec": penalized_speed,
-                "success_rate": success_rate,
-                "coverage": coverage,
-            })
-            self._history.append(
-                OptimizerTrial(
-                    params=config,
-                    tokens_per_sec=avg_speed,
-                    metadata={"success_rate": success_rate, "coverage": coverage},
-                )
-            )
-            trial_index += 1
-            # Switch to phase2 when phase1 budget is exhausted
-            if isinstance(self.optimizer, TwoPhaseOptimizer):
-                if (
-                    trial_index >= self.optimizer._phase1_budget
-                    and self.optimizer._active is self.optimizer._phase1
-                ):
-                    if self.auto_eval:
-                        from benchmarker.evaluator import evaluate_run
-                        phase1_scores = evaluate_run(results)
-                        hint = _build_refinement_hint_from_passing(results, phase1_scores)
-                    else:
-                        best_coarse = _best_config_from_history(self._history)
-                        hint = _build_refinement_hint(best_coarse, self.optimizer.parameters, step=1.0)
-                    phase2 = AdaptiveOptimizer(
-                        parameters=self.optimizer.parameters,
-                        resolution_factor=5,
-                        refinement_hint=hint or None,
+                # Skip already-completed configs (e.g. from resumed checkpoint)
+                if ckt in self._completed_configs:
+                    logger.info("Skipping already-completed config %s", ckt)
+                    trial_index += 1
+                    continue
+
+                config_results: list[RunResult] = []
+                config_aborted = False
+                for test in self.test_suite.tests:
+                    if config_aborted:
+                        break
+                    for rep in range(1, test.repeat + 1):
+                        try:
+                            result = await self._run_one(config, test, rep)
+                        except RuntimeError as exc:
+                            if "Circuit breaker is open" in str(exc):
+                                logger.error("Circuit breaker opened during run: %s", exc)
+                                self._error_list.append(exc)
+                                self._save_error_report(self._error_list)
+                                raise
+                            raise
+                        results.append(result)
+                        config_results.append(result)
+                        self._config_attempts[ckt] = self._config_attempts.get(ckt, 0) + 1
+                        if result.error is not None:
+                            self._config_failures[ckt] = self._config_failures.get(ckt, 0) + 1
+                            self._error_list.append(RuntimeError(result.error))
+                        logger.info(
+                            "repeat result: test=%s rep=%d status=%s error=%s",
+                            test.id,
+                            rep,
+                            "success" if result.error is None else "failure",
+                            result.error or "none",
+                        )
+                        if (
+                            self._config_attempts[ckt] >= 2
+                            and self._config_failures.get(ckt, 0) / self._config_attempts[ckt] > 0.8
+                        ):
+                            result.config_aborted = True
+                            config_aborted = True
+                            logger.info(
+                                "circuit breaker tripped for config %s after %d attempts (%d failures)",
+                                ckt,
+                                self._config_attempts[ckt],
+                                self._config_failures.get(ckt, 0),
+                            )
+                            break
+                        self.progress.advance()
+
+                avg_speed = self._avg_speed(config_results)
+                successful_runs = sum(1 for r in config_results if r.error is None)
+                total_runs = len(config_results)
+                success_rate = successful_runs / total_runs if total_runs > 0 else 0.0
+                successful_test_ids = {r.test_id for r in config_results if r.error is None}
+                total_tests = len(self.test_suite.tests)
+                coverage = len(successful_test_ids) / total_tests if total_tests > 0 else 0.0
+                for r in config_results:
+                    r.success_rate = success_rate
+                    r.coverage = coverage
+                penalized_speed = avg_speed * success_rate
+                self.optimizer.tell({
+                    "tokens_per_sec": penalized_speed,
+                    "success_rate": success_rate,
+                    "coverage": coverage,
+                })
+                self._history.append(
+                    OptimizerTrial(
+                        params=config,
+                        tokens_per_sec=avg_speed,
+                        metadata={"success_rate": success_rate, "coverage": coverage},
                     )
-                    self.optimizer._phase2 = phase2
-                    self.optimizer.switch_phase()
+                )
+                self._completed_configs.add(ckt)
+                trial_index += 1
+                self._save_checkpoint(results, trial_index)
+                # Switch to phase2 when phase1 budget is exhausted
+                if isinstance(self.optimizer, TwoPhaseOptimizer):
+                    if (
+                        trial_index >= self.optimizer._phase1_budget
+                        and self.optimizer._active is self.optimizer._phase1
+                    ):
+                        if self.auto_eval:
+                            from benchmarker.evaluator import evaluate_run
+                            phase1_scores = evaluate_run(results)
+                            hint = _build_refinement_hint_from_passing(results, phase1_scores)
+                        else:
+                            best_coarse = _best_config_from_history(self._history)
+                            hint = _build_refinement_hint(best_coarse, self.optimizer.parameters, step=1.0)
+                        phase2 = AdaptiveOptimizer(
+                            parameters=self.optimizer.parameters,
+                            resolution_factor=5,
+                            refinement_hint=hint or None,
+                        )
+                        self.optimizer._phase2 = phase2
+                        self.optimizer.switch_phase()
+                self._save(results)
+                self._save_history()
+        finally:
+            self.progress.finish()
             self._save(results)
             self._save_history()
-        self.progress.finish()
+            if self._error_list:
+                self._save_error_report(self._error_list)
 
-        self._save(results)
-        self._save_history()
         judge_path = self.run_dir / JUDGE_PROMPT_FILE
         generate_judge_prompt(self.run_dir, results, out_path=judge_path)
         # config_map.json is written alongside the judge prompt by generate_judge_prompt
@@ -320,8 +366,11 @@ class Runner:
         last_error: str | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                completion = await self.client.complete(
-                    messages=messages, model=self.model_name, **params
+                completion = await self._circuit_breaker.call(
+                    self.client.complete,
+                    messages=messages,
+                    model=self.model_name,
+                    **params,
                 )
                 return RunResult(
                     config=config,
@@ -428,3 +477,150 @@ class Runner:
             history.to_json(self.history_path, top_k=top_k)
         except (OSError, json.JSONDecodeError, TypeError) as exc:
             logger.warning("failed to save optimizer history: %s", exc)
+
+    def _generate_error_report(self, errors: list[BaseException]) -> dict[str, Any]:
+        """Build a detailed error report from collected exceptions."""
+        from collections import Counter
+
+        error_types = Counter(e.__class__.__name__ for e in errors)
+        configs_with_errors = []
+        for e in errors:
+            if hasattr(e, "context") and e.context:
+                configs_with_errors.append({
+                    "error": str(e),
+                    "type": e.__class__.__name__,
+                    "context": e.context,
+                })
+            else:
+                configs_with_errors.append({"error": str(e), "type": e.__class__.__name__})
+
+        return {
+            "total_errors": len(errors),
+            "error_types": dict(error_types),
+            "first_error": str(errors[0]) if errors else None,
+            "last_error": str(errors[-1]) if errors else None,
+            "configs_with_errors": configs_with_errors,
+            "recommendations": self._suggest_fixes(errors),
+        }
+
+    @staticmethod
+    def _suggest_fixes(errors: list[BaseException]) -> list[str]:
+        """Heuristic recommendations based on error patterns."""
+        recs: list[str] = []
+        transient_count = sum(1 for e in errors if isinstance(e, TransientError))
+        server_count = sum(1 for e in errors if isinstance(e, ServerError))
+        client_count = sum(1 for e in errors if isinstance(e, ClientError))
+
+        if server_count > len(errors) * 0.5:
+            recs.append("High server error rate (5xx). Check server health, logs, and resource limits.")
+        if transient_count > len(errors) * 0.5:
+            recs.append("Many transient timeouts. Check network stability and consider increasing client timeout.")
+        if client_count > 0:
+            recs.append("Client errors (4xx) detected. Verify request parameters and model name.")
+        if any("Circuit breaker is open" in str(e) for e in errors):
+            recs.append("Circuit breaker tripped. The endpoint may be down; wait before retrying.")
+
+        if not recs:
+            recs.append("No specific pattern detected. Review error_report.json for details.")
+
+        return recs
+
+    def _save_error_report(self, errors: list[BaseException]) -> None:
+        """Persist error report to the run directory."""
+        report = self._generate_error_report(errors)
+        path = self.run_dir / ERROR_REPORT_FILE
+        try:
+            path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            logger.info("Error report saved to %s", path)
+        except OSError as exc:
+            logger.warning("failed to save error report: %s", exc)
+
+    def _handle_checkpoint_on_start(self, resume: bool, force: bool) -> list[dict[str, Any]]:
+        """Determine how to handle an existing checkpoint.
+
+        Returns:
+            List of existing results to prepend (empty when starting fresh).
+
+        Raises:
+            SystemExit: When non-interactive abort is required.
+        """
+        checkpoint_path = self.run_dir / CHECKPOINT_FILE
+        if not checkpoint_path.exists():
+            return []
+
+        checkpoint = self._load_checkpoint(checkpoint_path)
+        existing_results = checkpoint.get("results", [])
+
+        if force:
+            logger.info("--force given, ignoring checkpoint and starting fresh.")
+            checkpoint_path.unlink(missing_ok=True)
+            return []
+
+        if resume:
+            logger.info("--resume given, resuming from checkpoint with %d existing results.", len(existing_results))
+            return existing_results
+
+        # Interactive or non-interactive prompt
+        last_index = checkpoint.get("trial_index", 0)
+        timestamp = checkpoint.get("timestamp", "unknown")
+        msg = (
+            f"Checkpoint exists from {timestamp} "
+            f"(last completed config index: {last_index}, results: {len(existing_results)}). "
+            "Resume from checkpoint?"
+        )
+
+        if sys.stdin.isatty():
+            try:
+                answer = input(f"{msg} [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer in ("y", "yes"):
+                logger.info("Resuming from checkpoint.")
+                return existing_results
+            else:
+                logger.info("Starting fresh (checkpoint will be overwritten).")
+                checkpoint_path.unlink(missing_ok=True)
+                return []
+        else:
+            logger.error(
+                "Checkpoint exists and not running interactively. Use --resume to resume or --force to overwrite."
+            )
+            raise SystemExit(1)
+
+    def _load_checkpoint(self, path: Path) -> dict[str, Any]:
+        """Read a checkpoint file from disk."""
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("checkpoint must be a JSON object")
+            return raw
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("invalid checkpoint file, starting fresh: %s", exc)
+            return {}
+
+    def _save_checkpoint(self, results: list[RunResult], trial_index: int) -> None:
+        """Write a checkpoint file to the run directory."""
+        checkpoint = {
+            "trial_index": trial_index,
+            "results": [r.model_dump() for r in results],
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        path = self.run_dir / CHECKPOINT_FILE
+        try:
+            path.write_text(json.dumps(checkpoint, indent=2, default=str), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("failed to save checkpoint: %s", exc)
+
+    async def _health_check(self) -> bool:
+        """Send a minimal request to verify endpoint health."""
+        try:
+            result = await self.client.complete(
+                messages=[{"role": "user", "content": "ping"}],
+                model=self.model_name,
+                max_tokens=1,
+                temperature=0.0,
+            )
+            return bool(result.response_text)
+        except Exception as exc:
+            logger.error("Health check failed: %s", exc)
+            return False

@@ -8,6 +8,7 @@ import pytest
 import respx
 from httpx import Response
 
+from benchmarker.circuit_breaker import CircuitBreaker
 from benchmarker.client import LLMClient
 from benchmarker.config import (
     OptimizerConfig,
@@ -60,7 +61,7 @@ async def test_end_to_end_run(tmp_path: Path) -> None:
     )
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
-    runner = Runner(client, _tiny_suite(), _grid(), "m", run_dir)
+    runner = Runner(client, _tiny_suite(), _grid(), "m", run_dir, enable_health_check=False)
     results, _ = await runner.run()
 
     # 2 trials * 2 tests = 4 results
@@ -93,7 +94,7 @@ async def test_end_to_end_parse_flow(tmp_path: Path) -> None:
     )
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
-    await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
+    await Runner(client, _tiny_suite(), _grid(), "m", run_dir, enable_health_check=False).run()
 
     # Simulate a judge reply with "conclude" recommendation
     judge_reply = """Based on my analysis:
@@ -116,7 +117,8 @@ async def test_end_to_end_server_error(tmp_path: Path) -> None:
     respx.post(BASE_URL).mock(return_value=Response(500, content="internal error"))
     run_dir = tmp_path / "run"
     client = LLMClient(base_url=BASE_URL)
-    results, _ = await Runner(client, _tiny_suite(), _grid(), "m", run_dir).run()
+    breaker = CircuitBreaker(failure_threshold=1000, recovery_timeout=1.0)
+    results, _ = await Runner(client, _tiny_suite(), _grid(), "m", run_dir, enable_health_check=False, circuit_breaker=breaker).run()
     # all attempts failed after retries -> recorded as failures
     assert len(results) == 4
     assert all(r.error for r in results)
