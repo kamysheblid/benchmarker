@@ -25,3 +25,4 @@ uv.lock
 *.md
 !README.md
 !PLANS.md
+quick_run/
