@@ -665,16 +665,29 @@ def test_best_config_from_history_best_by_tokens_per_sec() -> None:
 
 def test_build_refinement_hint_expands_by_step() -> None:
     from benchmarker.runner import _build_refinement_hint
-    hint = _build_refinement_hint({"temperature": 0.7, "top_k": 10}, step=0.2)
+
+    hint = _build_refinement_hint({"temperature": 0.7, "top_k": 10}, parameters=[], step=0.2)
     assert hint["temperature"] == pytest.approx([0.5, 0.9])
     assert hint["top_k"] == pytest.approx([9.8, 10.2])
 
 
 def test_build_refinement_hint_skips_non_numeric() -> None:
     from benchmarker.runner import _build_refinement_hint
-    hint = _build_refinement_hint({"strategy": "a", "temp": 0.5}, step=1.0)
+
+    hint = _build_refinement_hint({"strategy": "a", "temp": 0.5}, parameters=[], step=1.0)
     assert "strategy" not in hint
     assert hint["temp"] == [-0.5, 1.5]
+
+
+def test_build_refinement_hint_clamps_to_original_bounds() -> None:
+    from benchmarker.config import ParameterSpec, ParameterType
+    from benchmarker.runner import _build_refinement_hint
+
+    params = [
+        ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.5, high=1.5, step=0.5),
+    ]
+    hint = _build_refinement_hint({"temperature": 0.5}, parameters=params, step=1.0)
+    assert hint["temperature"] == [0.5, 1.5]
 
 
 # --------------------------------------------------------------------------- #

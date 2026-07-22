@@ -68,12 +68,23 @@ def _best_config_from_history(history: list[OptimizerTrial]) -> dict[str, Any]:
     return dict(best.params)
 
 
-def _build_refinement_hint(config: dict[str, Any], step: float = 1.0) -> dict[str, list[float]]:
-    """Build refinement hint by expanding each numeric param by ±step."""
+def _build_refinement_hint(
+    config: dict[str, Any], parameters: list[ParameterSpec], step: float = 1.0
+) -> dict[str, list[float]]:
+    """Build refinement hint by expanding each numeric param by ±step, clamped to original bounds."""
     hint: dict[str, list[float]] = {}
+    specs = {spec.name: spec for spec in parameters}
     for name, value in config.items():
-        if isinstance(value, (int, float)):
-            hint[name] = [float(value) - step, float(value) + step]
+        if not isinstance(value, (int, float)):
+            continue
+        spec = specs.get(name)
+        lo = float(value) - step
+        hi = float(value) + step
+        if spec is not None and spec.low is not None:
+            lo = max(lo, float(spec.low))
+        if spec is not None and spec.high is not None:
+            hi = min(hi, float(spec.high))
+        hint[name] = [lo, hi]
     return hint
 
 
@@ -263,7 +274,7 @@ class Runner:
                         hint = _build_refinement_hint_from_passing(results, phase1_scores)
                     else:
                         best_coarse = _best_config_from_history(self._history)
-                        hint = _build_refinement_hint(best_coarse, step=1.0)
+                        hint = _build_refinement_hint(best_coarse, self.optimizer.parameters, step=1.0)
                     phase2 = AdaptiveOptimizer(
                         parameters=self.optimizer.parameters,
                         resolution_factor=5,
