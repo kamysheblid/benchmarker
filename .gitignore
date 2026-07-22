@@ -21,5 +21,7 @@ judge.json
 params.yaml
 tests.json
 benchmarks/
-quick_run/
 uv.lock
+*.md
+!README.md
+!PLANS.md
