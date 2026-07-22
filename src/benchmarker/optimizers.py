@@ -394,12 +394,9 @@ def create_optimizer(
     if config.type == "grid":
         return GridOptimizer(parameters)
     if config.type == "random":
-        phase1 = RandomOptimizer(parameters, budget=max(1, round(config.budget * 0.4)), seed=seed)
-        return TwoPhaseOptimizer(phase1, None, phase1_budget=max(1, round(config.budget * 0.4)))
+        return RandomOptimizer(parameters, budget=config.budget, seed=seed)
     if config.type == "bayesian":
-        phase1_budget = max(1, round(config.budget * 0.4))
-        phase1 = BayesianOptimizer(parameters, budget=phase1_budget, seed=seed)
-        return TwoPhaseOptimizer(phase1, None, phase1_budget=phase1_budget)
+        return BayesianOptimizer(parameters, budget=config.budget, seed=seed)
     if config.type == "baseline_sweep":
         return ControlledOptimizer(parameters, baseline=config.baseline)
     raise ValueError(f"Unknown optimizer type: {config.type!r}")
