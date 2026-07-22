@@ -242,9 +242,10 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
     """Load benchmark prompts from a category directory structure.
 
     Each immediate subdirectory of *path* is treated as a category slug.
-    Inside each category, every ``*.json`` file is loaded as a single
-    :class:`TestCase`. Files are processed in sorted order so numeric
-    prefixes control sequencing.
+    JSON files are searched recursively within each category directory so
+    subdirectories (e.g. ``forager/implementation/``) are supported.
+    Files are processed in sorted order so numeric prefixes control
+    sequencing.
 
     Empty category directories are skipped silently.
 
@@ -277,7 +278,7 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
         if categories is not None and category not in categories:
             continue
         category_dir = path / category
-        json_files = sorted(category_dir.glob("*.json"))
+        json_files = sorted(category_dir.rglob("*.json"))
         if not json_files:
             continue
         for json_file in json_files:

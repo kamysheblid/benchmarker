@@ -234,7 +234,7 @@ in directory mode.
 
 ```yaml
 optimizer:
-  type: grid          # grid | random | bayesian
+  type: grid          # grid | random | bayesian | baseline_sweep
   budget: 8
 parameters:
   - name: temperature
@@ -248,6 +248,162 @@ parameters:
 static_params:
   chat_template_kwargs:
     enable_thinking: false
+```
+
+#### Optimizer types
+
+| Type | How it works | When to use |
+|------|--------------|-------------|
+| **`grid`** | Enumerates every combination of parameter values. Exhaustive. | Small categorical grids where you want to test every point. |
+| **`random`** | Samples random combinations until `budget` is exhausted. | Large numeric ranges where grid search would be too expensive. |
+| **`bayesian`** | Builds a probabilistic model of the parameter space and focuses sampling on promising regions. Stops after `budget` trials. | Coarse exploration over wide ranges; typically finds the best region with fewer samples than grid. |
+| **`baseline_sweep`** | Ablation study: varies one parameter at a time while holding others at a baseline. | Isolating the effect of a single parameter. Requires a `baseline` config. |
+
+#### Budget
+
+`budget` controls how many parameter configurations the optimizer will evaluate:
+
+- **`grid`**: `budget` is **ignored**. The optimizer runs every possible combination. With 3 parameters × 3 values each, that’s 27 configs regardless of budget.
+- **`random`**: Max samples before stopping. After `budget` configs, the optimizer raises `StopIteration`.
+- **`bayesian`**: Max Optuna trials. After `budget` trials, the optimizer raises `StopIteration`.
+- **`baseline_sweep`**: Not used; runs the full ablation set.
+
+**Rule of thumb:**
+- Use `grid` for 4 or fewer total combinations.
+- Use `bayesian` with `budget: 12–20` for coarse exploration over wide ranges.
+- Use `random` as a cheap fallback when Optuna is unavailable.
+
+#### Parameter types
+
+Parameters can be defined as:
+
+- **`categorical`** with explicit `choices` — e.g. `choices: [0, 1.0, 2.0]`
+- **`float`** with `low`, `high`, and optional `step` — e.g. `low: 0.0, high: 1.0, step: 0.1`
+- **`int`** with `low`, `high`, and optional `step` — e.g. `low: 10, high: 100, step: 10`
+
+For categorical parameters, the grid size is the product of all `choices` lengths. For numeric parameters with `step`, the grid size is the product of the number of steps in each range.
+
+## Agent-Specific Benchmarking
+
+The `benchmarker` supports agent-specific benchmarking via the `system` field in test JSON files and per-agent judge criteria.
+
+### Agent Benchmarks Structure
+
+For multi-agent systems like [agent-hive](https://github.com/hung319/agent-hive), create agent-specific benchmark directories:
+
+```
+benchmarks/
+├── hive/                          # Chief Planner & Orchestrator
+│   ├── planning/
+│   ├── orchestration/
+│   └── approval/
+├── architect/                     # Feature Architect (planner only)
+│   ├── design/
+│   ├── interviewing/
+│   └── spec-writing/
+├── swarm/                         # Execution Orchestrator
+│   ├── delegation/
+│   ├── verification/
+│   └── parallel-execution/
+├── scout/                         # Codebase & External Researcher
+│   ├── codebase-exploration/
+│   ├── external-research/
+│   └── dependency-analysis/
+├── forager/                       # Task Executor
+│   ├── implementation/
+│   ├── testing/
+│   └── worktree-management/
+├── hygienic/                      # Quality Reviewer
+│   ├── plan-review/
+│   └── code-review/
+├── code-reviewer/                 # Code Review Specialist
+│   └── diff-review/
+├── code-simplifier/               # Code Simplification
+│   ├── refactoring/
+│   └── complexity-reduction/
+├── codebase-analyzer/             # Codebase Analysis
+│   └── structure/
+├── codebase-locator/              # Code Location
+│   └── semantic-search/
+├── pattern-finder/                # Pattern Discovery
+│   └── anti-patterns/
+└── project-initializer/           # Project Setup
+    └── scaffolding/
+```
+
+### System Prompts
+
+Each test JSON should include a `system` field that mirrors the agent's actual system prompt from source. This ensures the benchmarked model adopts the correct persona, constraints, and output format.
+
+Example:
+
+```json
+{
+  "id": "forager-impl-001",
+  "system": "You are Forager, an autonomous senior engineer and task execution agent...",
+  "prompt": "Implement a function in Python...",
+  "max_tokens": 2048,
+  "repeat": 7,
+  "reasoning": false
+}
+```
+
+See `SYSTEM_PROMPTS.md` for verified system prompts from the agent-hive source.
+
+### Reasoning Flag by Agent Type
+
+| Agent Type | Reasoning | Rationale |
+|------------|-----------|-----------|
+| **Planning/Design** (Hive, Architect, Scout) | `true` | Needs to show thought process for plans and research |
+| **Execution** (Forager, Project-Initializer) | `false` | Should output code directly, no reasoning needed |
+| **Review** (Hygienic, Code-Reviewer) | `true` | Needs to explain reasoning for reviews |
+| **Location/Analysis** (Codebase-Locator, Codebase-Analyzer, Pattern-Finder) | `false` | Should output structured data directly |
+| **Simplification** (Code-Simplifier) | `true` | Should explain simplifications |
+| **Orchestration** (Swarm) | `false` | Should output structured delegation plans |
+
+### Repeat Counts by Agent
+
+| Agent | Recommended `repeat` | Rationale |
+|-------|---------------------|-----------|
+| **hive** | 5–7 | Planning outputs vary; need sufficient samples |
+| **architect** | 5 | Design outputs can vary; moderate repeat |
+| **swarm** | 5 | Orchestration logic should be consistent |
+| **scout** | 5–7 | Research outputs vary based on information retrieval |
+| **forager** | 7–10 | Code generation is highly stochastic |
+| **hygienic** | 5 | Review outputs should be consistent |
+| **code-reviewer** | 5 | Similar to hygienic |
+| **code-simplifier** | 5–7 | Refactoring can vary |
+| **codebase-analyzer** | 3–5 | Analysis outputs should be consistent |
+| **codebase-locator** | 3–5 | Location tasks are deterministic |
+| **pattern-finder** | 5 | Pattern identification can vary |
+| **project-initializer** | 3 | Scaffolding is deterministic |
+
+### Per-Agent Judge Criteria
+
+Different agents need different evaluation criteria. See `JUDGE_TEMPLATE.md` for the full template with agent-specific scoring rubrics.
+
+Key criteria by agent:
+
+- **Forager**: Code correctness, convention following, verification, minimal changes
+- **Hive**: Plan structure, dependency correctness, phase awareness, actionability
+- **Scout**: Evidence-based claims, search strategy, no speculation, parallel execution
+- **Hygienic**: Documentation vs design focus, four criteria (clarity/verifiability/completeness/big picture), specificity
+- **Architect**: Intent classification, self-clearance, AI-slop detection, test strategy
+- **Swarm**: Delegation logic, parallelization, verification plan, blocker handling
+
+### Running Agent Benchmarks
+
+```bash
+# Run all categories for a specific agent
+benchmarker run --model my-model --categories hive/planning,hive/orchestration
+
+# Run all categories for all agents
+benchmarker run --model my-model
+
+# Generate per-agent judge prompts
+for agent in hive architect swarm scout forager hygienic; do
+  cat JUDGE_TEMPLATE.md | sed "s/{AGENT_NAME}/$agent/g" > runs/$agent/judge_prompt.md
+done
 ```
 
 ## Tests
