@@ -690,6 +690,73 @@ def test_init_no_tests_json_created(tmp_path: Path) -> None:
     assert not (tmp_path / "tests.json").exists()
 
 
+# --------------------------------------------------------------------------- #
+# Task 05: parse command with --benchmark-file                                 #
+# --------------------------------------------------------------------------- #
+def test_parse_accepts_benchmark_file(tmp_path: Path) -> None:
+    """`benchmarker parse` should accept `--benchmark-file`."""
+    reply = tmp_path / "reply.txt"
+    reply.write_text(
+        '{"scores": {"a": {"overall": 5}}, "recommendation": "conclude", "confidence": "high", "reasoning": "ok"}'
+    )
+    benchmark = tmp_path / "bench.yaml"
+    benchmark.write_text(
+        yaml.safe_dump(
+            {
+                "optimizer": {"type": "grid", "budget": 5},
+                "parameters": [
+                    {"name": "temperature", "type": "float", "low": 0.0, "high": 1.0, "step": 0.1}
+                ],
+                "tests": [{"id": "t1", "prompt": "hi"}],
+            }
+        )
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["parse", str(reply), "--benchmark-file", str(benchmark)])
+    assert result.exit_code == 0
+    assert "CONCLUDE" in result.output
+
+
+def test_parse_infers_benchmark_from_run_meta(tmp_path: Path) -> None:
+    """`benchmarker parse` infers benchmark file from run_meta.json when --benchmark-file is omitted."""
+    reply = tmp_path / "reply.txt"
+    reply.write_text(
+        '{"scores": {"a": {"overall": 5}}, "recommendation": "conclude", "confidence": "high", "reasoning": "ok"}'
+    )
+    benchmark = tmp_path / "my_benchmark.yaml"
+    benchmark.write_text(
+        yaml.safe_dump(
+            {
+                "optimizer": {"type": "grid", "budget": 5},
+                "parameters": [
+                    {"name": "temperature", "type": "float", "low": 0.0, "high": 1.0, "step": 0.1}
+                ],
+                "tests": [{"id": "t1", "prompt": "hi"}],
+            }
+        )
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run_meta.json").write_text(
+        json.dumps({"benchmark_file": str(benchmark)})
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["parse", str(reply), "--run-dir", str(run_dir)],
+    )
+    assert result.exit_code == 0
+    assert "CONCLUDE" in result.output
+
+
+def test_parse_help_shows_benchmark_file() -> None:
+    """`benchmarker parse --help` should document --benchmark-file."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["parse", "--help"])
+    assert result.exit_code == 0
+    assert "--benchmark-file" in result.output
+
+
 def test_init_force_removes_existing_benchmarks(tmp_path: Path) -> None:
     """`benchmarker init --force` recreates benchmarks/ from defaults."""
     benchmarks = tmp_path / "benchmarks"

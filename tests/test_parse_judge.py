@@ -271,6 +271,136 @@ class TestPerCategory:
         assert verdict.best_config_per_task == {"clarity": "cfg1"}
 
 
+# ------------------------------------------------------------------ #
+#  benchmark_source: update benchmark YAML in place                    #
+# ------------------------------------------------------------------ #
+class TestBenchmarkSource:
+    def test_refine_updates_benchmark_yaml(self, tmp_path: Path) -> None:
+        """When benchmark_source is provided, refine updates the benchmark YAML."""
+        benchmark_path = tmp_path / "benchmark.yaml"
+        benchmark_path.write_text(
+            yaml.safe_dump(
+                {
+                    "optimizer": {"type": "grid", "budget": 10},
+                    "parameters": [
+                        {
+                            "name": "temperature",
+                            "type": "float",
+                            "low": 0.0,
+                            "high": 1.5,
+                            "step": 0.1,
+                        },
+                    ],
+                    "static_params": {"model": "test"},
+                    "tests": [{"id": "t1", "prompt": "hello"}],
+                }
+            )
+        )
+        text = """{
+            "scores": {"cfg_z": {"overall": 6}},
+            "recommendation": "refine",
+            "confidence": "medium",
+            "reasoning": "Promising region.",
+            "refinement_hint": {"temperature": [0.7, 0.9]}
+        }"""
+        parse_and_act(
+            text,
+            params_path=tmp_path / "params.yaml",
+            benchmark_source=benchmark_path,
+        )
+        updated = yaml.safe_load(benchmark_path.read_text(encoding="utf-8"))
+        assert updated["parameters"][0]["low"] == 0.7
+        assert updated["parameters"][0]["high"] == 0.9
+        assert updated["tests"][0]["id"] == "t1"
+
+    def test_expand_updates_benchmark_yaml(self, tmp_path: Path) -> None:
+        """When benchmark_source is provided, expand widens ranges in the benchmark YAML."""
+        benchmark_path = tmp_path / "benchmark.yaml"
+        benchmark_path.write_text(
+            yaml.safe_dump(
+                {
+                    "optimizer": {"type": "grid", "budget": 10},
+                    "parameters": [
+                        {
+                            "name": "temperature",
+                            "type": "float",
+                            "low": 0.0,
+                            "high": 1.0,
+                            "step": 0.1,
+                        },
+                    ],
+                    "static_params": {"model": "test"},
+                    "tests": [{"id": "t1", "prompt": "hello"}],
+                }
+            )
+        )
+        text = """{
+            "scores": {"cfg_z": {"overall": 6}},
+            "recommendation": "expand",
+            "confidence": "low",
+            "reasoning": "Too narrow.",
+            "refinement_hint": {"temperature": [-0.5, 1.5]}
+        }"""
+        parse_and_act(text, benchmark_source=benchmark_path)
+        updated = yaml.safe_load(benchmark_path.read_text(encoding="utf-8"))
+        assert updated["parameters"][0]["low"] == -0.5
+        assert updated["parameters"][0]["high"] == 1.5
+        assert updated["tests"][0]["id"] == "t1"
+
+    def test_conclude_preserves_benchmark_yaml(self, tmp_path: Path) -> None:
+        """When benchmark_source is provided, conclude leaves benchmark YAML untouched."""
+        benchmark_path = tmp_path / "benchmark.yaml"
+        original = {
+            "optimizer": {"type": "grid", "budget": 10},
+            "parameters": [
+                {"name": "temperature", "type": "float", "low": 0.0, "high": 1.0, "step": 0.1},
+            ],
+            "static_params": {"model": "test"},
+            "tests": [{"id": "t1", "prompt": "hello"}],
+        }
+        benchmark_path.write_text(yaml.safe_dump(original))
+        text = """{
+            "scores": {"cfg_a": {"overall": 9}},
+            "recommendation": "conclude",
+            "confidence": "high",
+            "reasoning": "Done."
+        }"""
+        parse_and_act(text, benchmark_source=benchmark_path)
+        updated = yaml.safe_load(benchmark_path.read_text(encoding="utf-8"))
+        assert updated["parameters"][0]["low"] == 0.0
+        assert updated["tests"][0]["id"] == "t1"
+
+    def test_backward_compat_without_benchmark_source(self, tmp_path: Path) -> None:
+        """Without benchmark_source, params.yaml is still updated (backward compat)."""
+        params_path = tmp_path / "params.yaml"
+        params_path.write_text(
+            yaml.safe_dump(
+                {
+                    "optimizer": {"type": "grid", "budget": 10},
+                    "parameters": [
+                        {
+                            "name": "temperature",
+                            "type": "float",
+                            "low": 0.0,
+                            "high": 1.5,
+                            "step": 0.1,
+                        },
+                    ],
+                }
+            )
+        )
+        text = """{
+            "scores": {"cfg_z": {"overall": 6}},
+            "recommendation": "refine",
+            "confidence": "medium",
+            "reasoning": "Promising region.",
+            "refinement_hint": {"temperature": [0.7, 0.9]}
+        }"""
+        parse_and_act(text, params_path=params_path)
+        updated = yaml.safe_load(params_path.read_text(encoding="utf-8"))
+        assert updated["parameters"][0]["low"] == 0.7
+
+
 def _stdout_last(capsys: pytest.CaptureFixture | None) -> str:
     """Helper to capture stdout if capsys is available."""
     if capsys:
