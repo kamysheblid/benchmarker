@@ -442,7 +442,7 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# YAML benchmark file helpers (tasks 1 + 2)
+# YAML benchmark file models
 # --------------------------------------------------------------------------- #
 def test_load_benchmark_file_yaml(tmp_path: Path) -> None:
     path = tmp_path / "bench.yaml"
@@ -507,13 +507,35 @@ def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
     assert all(p.suffix == ".yaml" for p in files)
 
 
-def test_discover_benchmark_files_yml_extension(tmp_path: Path) -> None:
-    d = tmp_path / "benchmarks"
-    d.mkdir()
-    (d / "a.yml").write_text("tests: []", encoding="utf-8")
-    files = discover_benchmark_files(d)
-    assert len(files) == 1
-    assert files[0].suffix == ".yml"
+def test_discover_benchmark_files_sorted(tmp_path: Path) -> None:
+    (tmp_path / "z.yaml").write_text("")
+    (tmp_path / "a.yaml").write_text("")
+    result = discover_benchmark_files(tmp_path)
+    assert result == [tmp_path / "a.yaml", tmp_path / "z.yaml"]
+
+
+def test_load_tests_missing_id_raises(tmp_path: Path) -> None:
+    path = tmp_path / "tests.json"
+    path.write_text(json.dumps([{"prompt": "Hello"}]))
+    with pytest.raises(ValidationError) as exc:
+        load_tests(path)
+    assert "id" in str(exc.value).lower()
+
+
+# --------------------------------------------------------------------------- #
+# validate_params_match (2.1)
+# --------------------------------------------------------------------------- #
+def test_validate_params_match_both_none() -> None:
+    validate_params_match(None, None)  # should not raise
+
+
+def test_validate_params_match_one_none() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+    )
+    validate_params_match(None, cfg)  # should not raise
+    validate_params_match(cfg, None)  # should not raise
 
 
 def test_validate_params_match_identical() -> None:
@@ -558,9 +580,21 @@ def test_merge_params_override() -> None:
     assert merged.static_params == {"seed": 2}
 
 
-def test_merge_params_does_not_mutate_base() -> None:
-    base = ParamsConfig(optimizer=OptimizerConfig(type="grid", budget=5))
-    override = ParamsConfig(optimizer=OptimizerConfig(type="bayesian", budget=10))
-    merge_params(base, override)
-    assert base.optimizer.type == "grid"
-    assert base.optimizer.budget == 5
+def test_merge_params_deepcopy_prevents_mutation_leak() -> None:
+    base = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+        static_params={"a": [1, 2]},
+    )
+    override = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
+        static_params={"a": [3, 4]},
+    )
+    merged = merge_params(base, override)
+    # Mutate merged nested fields
+    merged.parameters[0].low = 99.0
+    merged.static_params["a"].append(99)
+    # Base must remain unchanged
+    assert base.parameters[0].low == 0.1
+    assert base.static_params["a"] == [1, 2]

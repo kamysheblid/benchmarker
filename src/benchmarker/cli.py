@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 from rich.progress import Progress
 from rich.table import Table
@@ -31,6 +32,15 @@ from benchmarker.runner import ProgressReporter, Runner, config_key
 
 console = Console()
 logger = logging.getLogger("benchmarker")
+
+
+def _yaml_str_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+yaml.add_representer(str, _yaml_str_representer, Dumper=yaml.SafeDumper)
 
 
 @click.group()
@@ -66,7 +76,7 @@ _CATEGORY_MAP = {
     default=".",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Directory to initialise with default config files.",
+    help="Directory to initialise with default benchmark YAML files.",
 )
 @click.option(
     "--force",
@@ -75,12 +85,11 @@ _CATEGORY_MAP = {
     help="Overwrite existing files.",
 )
 def init(target_dir: Path, force: bool) -> None:
-    """Create default config files (benchmarks/, params.yaml) in the given directory."""
+    """Create default benchmark YAML files in the given directory."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     benchmarks_dest = target_dir / "benchmarks"
-    params_dest = target_dir / "params.yaml"
 
     copied = []
 
@@ -90,28 +99,22 @@ def init(target_dir: Path, force: bool) -> None:
         benchmarks_dest.mkdir(parents=True, exist_ok=True)
 
         suite = load_tests_default()
+        params = load_params_default()
+
+        # Group tests by category
+        category_tests: dict[str, list] = {}
         counters: dict[str, int] = {}
         for test in suite.tests:
             category = _CATEGORY_MAP.get(test.id, "general")
             counters[category] = counters.get(category, 0) + 1
-            cat_dir = benchmarks_dest / category
-            cat_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{counters[category]:03d}-{test.id}.json"
-            filepath = cat_dir / filename
-            filepath.write_text(
-                json.dumps(test.model_dump(exclude_none=True), indent=2),
-                encoding="utf-8",
-            )
-        copied.append(benchmarks_dest)
-    else:
-        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
+            category_tests.setdefault(category, []).append(test)
 
-    if not params_dest.exists() or force:
-        params = load_params_default()
-        import yaml
-
-        raw = {
-            "optimizer": {"type": params.optimizer.type, "budget": params.optimizer.budget},
+        param_data = {
+            "optimizer": {
+                "type": params.optimizer.type,
+                "budget": params.optimizer.budget,
+                "baseline": params.optimizer.baseline,
+            },
             "parameters": [
                 {
                     "name": p.name,
@@ -125,10 +128,30 @@ def init(target_dir: Path, force: bool) -> None:
             ],
             "static_params": params.static_params,
         }
-        params_dest.write_text(yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8")
-        copied.append(params_dest)
+
+        for category in sorted(category_tests):
+            tests_data = []
+            for t in category_tests[category]:
+                test_dict: dict[str, Any] = {"id": t.id, "prompt": t.prompt}
+                if t.system is not None:
+                    test_dict["system"] = t.system
+                if t.max_tokens is not None:
+                    test_dict["max_tokens"] = t.max_tokens
+                if t.repeat != 1:
+                    test_dict["repeat"] = t.repeat
+                if t.reasoning is not None:
+                    test_dict["reasoning"] = t.reasoning
+                tests_data.append(test_dict)
+
+            data = {**param_data, "tests": tests_data}
+            filepath = benchmarks_dest / f"{category}.yaml"
+            filepath.write_text(
+                yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            copied.append(filepath)
     else:
-        click.echo(f"  (skip) {params_dest} already exists — use --force to overwrite.")
+        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
 
     if copied:
         for f in copied:

@@ -208,6 +208,9 @@ def validate_params(config: ParamsConfig) -> None:
                 )
 
 
+# --------------------------------------------------------------------------- #
+# Loaders
+# --------------------------------------------------------------------------- #
 def validate_params_match(a: ParamsConfig | None, b: ParamsConfig | None) -> None:
     """Validate that two ``ParamsConfig`` objects are compatible for merging.
 

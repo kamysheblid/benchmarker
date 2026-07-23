@@ -73,7 +73,7 @@ def test_run_default_executes(tmp_path: Path, monkeypatch) -> None:
 # init                                                                        #
 # --------------------------------------------------------------------------- #
 def test_init_creates_benchmarks_directory(tmp_path: Path) -> None:
-    """`benchmarker init` should create benchmarks/ with category subdirs."""
+    """`benchmarker init` should create benchmarks/ with category YAML files."""
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--dir", str(tmp_path)])
     assert result.exit_code == 0
@@ -81,25 +81,26 @@ def test_init_creates_benchmarks_directory(tmp_path: Path) -> None:
     benchmarks = tmp_path / "benchmarks"
     assert benchmarks.is_dir()
 
-    subdirs = sorted(p.name for p in benchmarks.iterdir() if p.is_dir())
-    expected_subdirs = [
-        "api-integration",
-        "bug-fixing",
-        "code-generation",
-        "comment-generation",
-        "general",
-        "refactoring",
-        "security-vulnerability",
-        "test-generation",
+    yaml_files = sorted(p.name for p in benchmarks.iterdir() if p.is_file() and p.suffix == ".yaml")
+    expected_files = [
+        "api-integration.yaml",
+        "bug-fixing.yaml",
+        "code-generation.yaml",
+        "comment-generation.yaml",
+        "general.yaml",
+        "refactoring.yaml",
+        "security-vulnerability.yaml",
+        "test-generation.yaml",
     ]
-    assert subdirs == expected_subdirs
+    assert yaml_files == expected_files
 
-    json_files = sorted(benchmarks.glob("**/*.json"))
-    assert len(json_files) == 13
-    for jf in json_files:
-        data = json.loads(jf.read_text(encoding="utf-8"))
-        assert "id" in data
-        assert "prompt" in data
+    for yf in yaml_files:
+        data = yaml.safe_load((benchmarks / yf).read_text(encoding="utf-8"))
+        assert "optimizer" in data
+        assert "parameters" in data
+        assert "static_params" in data
+        assert "tests" in data
+        assert isinstance(data["tests"], list)
 
 
 def test_init_does_not_create_tests_json(tmp_path: Path) -> None:
@@ -110,12 +111,12 @@ def test_init_does_not_create_tests_json(tmp_path: Path) -> None:
     assert not (tmp_path / "tests.json").exists()
 
 
-def test_init_creates_params_yaml(tmp_path: Path) -> None:
-    """`benchmarker init` should still create params.yaml."""
+def test_init_does_not_create_params_yaml(tmp_path: Path) -> None:
+    """`benchmarker init` should NOT create params.yaml."""
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--dir", str(tmp_path)])
     assert result.exit_code == 0
-    assert (tmp_path / "params.yaml").exists()
+    assert not (tmp_path / "params.yaml").exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -395,7 +396,7 @@ def test_run_loads_directory_by_default(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_init_creates_benchmarks_dir(tmp_path: Path) -> None:
-    """`benchmarker init --dir` creates benchmarks/ with subdirs and prompt files."""
+    """`benchmarker init --dir` creates benchmarks/ with YAML files."""
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--dir", str(tmp_path)])
     assert result.exit_code == 0
@@ -403,25 +404,26 @@ def test_init_creates_benchmarks_dir(tmp_path: Path) -> None:
     benchmarks = tmp_path / "benchmarks"
     assert benchmarks.is_dir()
 
-    subdirs = sorted(p.name for p in benchmarks.iterdir() if p.is_dir())
-    expected_subdirs = [
-        "api-integration",
-        "bug-fixing",
-        "code-generation",
-        "comment-generation",
-        "general",
-        "refactoring",
-        "security-vulnerability",
-        "test-generation",
+    yaml_files = sorted(p.name for p in benchmarks.iterdir() if p.is_file() and p.suffix == ".yaml")
+    expected_files = [
+        "api-integration.yaml",
+        "bug-fixing.yaml",
+        "code-generation.yaml",
+        "comment-generation.yaml",
+        "general.yaml",
+        "refactoring.yaml",
+        "security-vulnerability.yaml",
+        "test-generation.yaml",
     ]
-    assert subdirs == expected_subdirs
+    assert yaml_files == expected_files
 
-    json_files = sorted(benchmarks.glob("**/*.json"))
-    assert len(json_files) == 13
-    for jf in json_files:
-        data = json.loads(jf.read_text(encoding="utf-8"))
-        assert "id" in data
-        assert "prompt" in data
+    for yf in yaml_files:
+        data = yaml.safe_load((benchmarks / yf).read_text(encoding="utf-8"))
+        assert "optimizer" in data
+        assert "parameters" in data
+        assert "static_params" in data
+        assert "tests" in data
+        assert isinstance(data["tests"], list)
 
 
 def test_init_no_tests_json_created(tmp_path: Path) -> None:
@@ -436,18 +438,18 @@ def test_init_force_removes_existing_benchmarks(tmp_path: Path) -> None:
     """`benchmarker init --force` recreates benchmarks/ from defaults."""
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
-    (benchmarks / "old-file.json").write_text(json.dumps({"id": "old", "prompt": "stale"}))
+    (benchmarks / "old-file.yaml").write_text("prompt: stale")
 
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--dir", str(tmp_path), "--force"])
     assert result.exit_code == 0
 
     assert benchmarks.is_dir()
-    assert not (benchmarks / "old-file.json").exists()
+    assert not (benchmarks / "old-file.yaml").exists()
 
-    json_files = sorted(benchmarks.glob("**/*.json"))
-    assert len(json_files) == 13
-    for jf in json_files:
-        data = json.loads(jf.read_text(encoding="utf-8"))
-        assert "id" in data
-        assert "prompt" in data
+    yaml_files = sorted(benchmarks.glob("*.yaml"))
+    assert len(yaml_files) == 8
+    for yf in yaml_files:
+        data = yaml.safe_load(yf.read_text(encoding="utf-8"))
+        assert "optimizer" in data
+        assert "tests" in data
