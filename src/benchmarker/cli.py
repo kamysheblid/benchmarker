@@ -2,11 +2,13 @@
 
 import asyncio
 import csv
-import json
 import logging
 import shutil
-import sys
 from pathlib import Path
+
+from typing import Any
+
+import yaml
 
 import click
 import yaml
@@ -49,23 +51,6 @@ def main() -> None:
     """benchmarker - find optimal LLM sampling parameters."""
 
 
-_CATEGORY_MAP = {
-    "coding_chunk": "code-generation",
-    "algorithmic_palindrome": "code-generation",
-    "algorithmic_twosum": "code-generation",
-    "algorithmic_bst": "code-generation",
-    "bugfixing": "bug-fixing",
-    "refactoring": "refactoring",
-    "explanation_sql": "security-vulnerability",
-    "explanation_complexity": "comment-generation",
-    "integration_api": "api-integration",
-    "test_generation": "test-generation",
-    "creative": "general",
-    "reasoning": "general",
-    "factual": "general",
-}
-
-
 # ------------------------------------------------------------------ #
 #  init                                                               #
 # ------------------------------------------------------------------ #
@@ -85,12 +70,11 @@ _CATEGORY_MAP = {
     help="Overwrite existing files.",
 )
 def init(target_dir: Path, force: bool) -> None:
-    """Create default benchmark YAML files in the given directory."""
+    """Create default self-contained benchmark files in the given directory."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     benchmarks_dest = target_dir / "benchmarks"
-
     copied = []
 
     if not benchmarks_dest.exists() or force:
@@ -99,21 +83,12 @@ def init(target_dir: Path, force: bool) -> None:
         benchmarks_dest.mkdir(parents=True, exist_ok=True)
 
         suite = load_tests_default()
+        # Load params from bundled defaults for writing into each YAML file
         params = load_params_default()
-
-        # Group tests by category
-        category_tests: dict[str, list] = {}
-        counters: dict[str, int] = {}
-        for test in suite.tests:
-            category = _CATEGORY_MAP.get(test.id, "general")
-            counters[category] = counters.get(category, 0) + 1
-            category_tests.setdefault(category, []).append(test)
-
-        param_data = {
+        params_raw = {
             "optimizer": {
                 "type": params.optimizer.type,
                 "budget": params.optimizer.budget,
-                "baseline": params.optimizer.baseline,
             },
             "parameters": [
                 {
@@ -129,24 +104,18 @@ def init(target_dir: Path, force: bool) -> None:
             "static_params": params.static_params,
         }
 
-        for category in sorted(category_tests):
-            tests_data = []
-            for t in category_tests[category]:
-                test_dict: dict[str, Any] = {"id": t.id, "prompt": t.prompt}
-                if t.system is not None:
-                    test_dict["system"] = t.system
-                if t.max_tokens is not None:
-                    test_dict["max_tokens"] = t.max_tokens
-                if t.repeat != 1:
-                    test_dict["repeat"] = t.repeat
-                if t.reasoning is not None:
-                    test_dict["reasoning"] = t.reasoning
-                tests_data.append(test_dict)
+        # Group tests by category from suite metadata
+        by_category: dict[str, list[dict[str, Any]]] = {}
+        for tc in suite.tests:
+            cat = suite.categories.get(tc.id, "general")
+            by_category.setdefault(cat, []).append(tc.model_dump(exclude_none=True))
 
-            data = {**param_data, "tests": tests_data}
+        for category, tests in sorted(by_category.items()):
+            raw = dict(params_raw)
+            raw["tests"] = tests
             filepath = benchmarks_dest / f"{category}.yaml"
             filepath.write_text(
-                yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+                yaml.safe_dump(raw, default_flow_style=False, sort_keys=False),
                 encoding="utf-8",
             )
             copied.append(filepath)

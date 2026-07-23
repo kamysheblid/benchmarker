@@ -1,0 +1,62 @@
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+  - name: top_p
+    type: float
+    low: 0.1
+    high: 1.0
+    step: 0.1
+  - name: min_p
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+  - name: repeat_penalty
+    type: float
+    low: 1.0
+    high: 1.2
+    step: 0.1
+  - name: frequency_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+  - name: presence_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: refactoring
+    prompt: |
+      You are a code quality assistant. Refactor the following Python function to improve readability and add complete type hints. Output only the refactored function code with no explanation.
+
+      Task:
+      def process_data(data, opts):
+          x = []
+          for i in range(len(data)):
+              if data[i] > 0:
+                  y = data[i] * opts.get('mult', 1)
+                  if opts.get('offset'):
+                      y = y + opts['offset']
+                  if opts.get('round'):
+                      y = round(y, opts['round'])
+                  x.append(y)
+          return x
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false

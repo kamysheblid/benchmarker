@@ -1,0 +1,51 @@
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+  - name: top_p
+    type: float
+    low: 0.1
+    high: 1.0
+    step: 0.1
+  - name: min_p
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+  - name: repeat_penalty
+    type: float
+    low: 1.0
+    high: 1.2
+    step: 0.1
+  - name: frequency_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+  - name: presence_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: integration_api
+    prompt: |
+      You are a code generation assistant. Return a complete Python script with a one-line docstring. Do not include any explanation. Only output the script code.
+
+      Task: Write a Python script that fetches JSON data from 'https://api.example.com/data', parses the response, and writes selected fields ('id', 'name', 'value') to a CSV file named 'output.csv'. Use the requests library. Include error handling for network failures. Include a short usage example in a comment.
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false

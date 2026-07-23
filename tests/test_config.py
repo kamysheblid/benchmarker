@@ -442,159 +442,186 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# YAML benchmark file models
+# Phase 6: YAML benchmark file loading
 # --------------------------------------------------------------------------- #
-def test_load_benchmark_file_yaml(tmp_path: Path) -> None:
+def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    cat = tmp_path / "cat-a"
+    cat.mkdir()
+    (cat / "001-first.yaml").write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t1\n    prompt: A\n")
+    (cat / "002-second.yaml").write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t2\n    prompt: B\n")
+    (cat / "readme.txt").write_text("ignored")
+
+    files = discover_benchmark_files(tmp_path)
+    assert [p.name for p in files] == ["001-first.yaml", "002-second.yaml"]
+
+
+def test_discover_benchmark_files_single_file(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    f = tmp_path / "single.yaml"
+    f.write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t1\n    prompt: A\n")
+    files = discover_benchmark_files(f)
+    assert files == [f]
+
+
+def test_discover_benchmark_files_ignores_non_yaml(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    (tmp_path / "ignored.json").write_text("{}")
+    files = discover_benchmark_files(tmp_path)
+    assert files == []
+
+
+def test_load_benchmark_file_valid(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters:
+  - name: temperature
+    type: float
+    low: 0.1
+    high: 1.0
+static_params:
+  key: value
+tests:
+  - id: t1
+    prompt: "Say hi"
+    max_tokens: 50
+    repeat: 2
+    reasoning: false
+"""
     path = tmp_path / "bench.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "tests": [{"id": "t1", "prompt": "Hello"}],
-                "categories": {"t1": "general"},
-                "optimizer": {"type": "grid", "budget": 5},
-                "parameters": [{"name": "temperature", "type": "float", "low": 0.1, "high": 1.0}],
-                "static_params": {"seed": 42},
-            }
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(raw, encoding="utf-8")
     suite, params = load_benchmark_file(path)
     assert isinstance(suite, TestSuite)
     assert len(suite.tests) == 1
     assert suite.tests[0].id == "t1"
-    assert suite.categories == {"t1": "general"}
-    assert isinstance(params, ParamsConfig)
+    assert suite.tests[0].prompt == "Say hi"
+    assert suite.tests[0].repeat == 2
+    assert params is not None
     assert params.optimizer.type == "grid"
+    assert params.optimizer.budget == 5
     assert params.parameters[0].name == "temperature"
-    assert params.static_params == {"seed": 42}
+    assert params.static_params == {"key": "value"}
 
 
-def test_load_benchmark_file_minimal(tmp_path: Path) -> None:
-    path = tmp_path / "bench.yaml"
-    path.write_text(
-        yaml.safe_dump({"tests": [{"id": "t1", "prompt": "Hi"}]}),
-        encoding="utf-8",
-    )
+def test_load_benchmark_file_no_optimizer_returns_none_params(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+tests:
+  - id: t1
+    prompt: "Say hi"
+"""
+    path = tmp_path / "fallback.yaml"
+    path.write_text(raw, encoding="utf-8")
     suite, params = load_benchmark_file(path)
+    assert isinstance(suite, TestSuite)
     assert len(suite.tests) == 1
     assert params is None
 
 
-def test_load_benchmark_file_invalid_raises(tmp_path: Path) -> None:
-    path = tmp_path / "bench.yaml"
-    path.write_text("not: valid: yaml: [", encoding="utf-8")
-    with pytest.raises((yaml.YAMLError, ValidationError)):
+def test_load_benchmark_file_missing_id_auto_generates(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - prompt: "A"
+  - prompt: "B"
+"""
+    path = tmp_path / "autoid.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, params = load_benchmark_file(path)
+    ids = [t.id for t in suite.tests]
+    assert ids == ["autoid-test-1", "autoid-test-2"]
+
+
+def test_load_benchmark_file_mixed_explicit_and_missing_ids(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - id: custom
+    prompt: "A"
+  - prompt: "B"
+"""
+    path = tmp_path / "mixed.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, _ = load_benchmark_file(path)
+    ids = [t.id for t in suite.tests]
+    assert ids == ["custom", "mixed-test-1"]
+
+
+def test_load_benchmark_file_duplicate_ids_raises_value_error(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - id: t1
+    prompt: "A"
+  - id: t1
+    prompt: "B"
+"""
+    path = tmp_path / "dup.yaml"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate test id"):
         load_benchmark_file(path)
 
 
-def test_discover_benchmark_files_single(tmp_path: Path) -> None:
-    path = tmp_path / "bench.yaml"
-    path.write_text("tests: []", encoding="utf-8")
-    files = discover_benchmark_files(path)
-    assert files == [path]
-
-
-def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
-    d = tmp_path / "benchmarks"
-    d.mkdir()
-    (d / "a.yaml").write_text("tests: []", encoding="utf-8")
-    sub = d / "sub"
-    sub.mkdir()
-    (sub / "b.yaml").write_text("tests: []", encoding="utf-8")
-    (sub / "c.json").write_text("[]", encoding="utf-8")
-    files = discover_benchmark_files(d)
-    assert len(files) == 2
-    assert all(p.suffix == ".yaml" for p in files)
-
-
-def test_discover_benchmark_files_sorted(tmp_path: Path) -> None:
-    (tmp_path / "z.yaml").write_text("")
-    (tmp_path / "a.yaml").write_text("")
-    result = discover_benchmark_files(tmp_path)
-    assert result == [tmp_path / "a.yaml", tmp_path / "z.yaml"]
-
-
-def test_load_tests_missing_id_raises(tmp_path: Path) -> None:
+def test_load_tests_missing_id_raises_value_error(tmp_path: Path) -> None:
     path = tmp_path / "tests.json"
-    path.write_text(json.dumps([{"prompt": "Hello"}]))
-    with pytest.raises(ValidationError) as exc:
+    path.write_text(json.dumps([{"prompt": "Hi"}]))
+    with pytest.raises(ValueError, match="missing test id"):
         load_tests(path)
-    assert "id" in str(exc.value).lower()
 
 
-# --------------------------------------------------------------------------- #
-# validate_params_match (2.1)
-# --------------------------------------------------------------------------- #
-def test_validate_params_match_both_none() -> None:
-    validate_params_match(None, None)  # should not raise
+def test_load_tests_default_returns_all_suites(tmp_path: Path) -> None:
+    from benchmarker.config import load_tests_default
+
+    suite = load_tests_default()
+    assert isinstance(suite, TestSuite)
+    assert len(suite.tests) == 13
+    ids = {t.id for t in suite.tests}
+    assert {
+        "creative",
+        "reasoning",
+        "factual",
+        "coding_chunk",
+        "algorithmic_palindrome",
+        "algorithmic_twosum",
+        "algorithmic_bst",
+        "bugfixing",
+        "refactoring",
+        "explanation_sql",
+        "explanation_complexity",
+        "integration_api",
+        "test_generation",
+    } == ids
 
 
-def test_validate_params_match_one_none() -> None:
-    cfg = ParamsConfig(
-        optimizer=OptimizerConfig(type="bayesian"),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
-    )
-    validate_params_match(None, cfg)  # should not raise
-    validate_params_match(cfg, None)  # should not raise
+def test_load_tests_default_all_have_prompts_and_repeat(tmp_path: Path) -> None:
+    from benchmarker.config import load_tests_default
 
-
-def test_validate_params_match_identical() -> None:
-    a = ParamsConfig(
-        optimizer=OptimizerConfig(type="grid", budget=5),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
-        static_params={"seed": 1},
-    )
-    validate_params_match(a, a)  # should not raise
-
-
-def test_validate_params_match_none() -> None:
-    a = ParamsConfig(optimizer=OptimizerConfig(type="grid", budget=5))
-    validate_params_match(a, None)  # should not raise
-    validate_params_match(None, a)  # should not raise
-    validate_params_match(None, None)  # should not raise
-
-
-def test_validate_params_match_mismatch_raises() -> None:
-    a = ParamsConfig(optimizer=OptimizerConfig(type="grid", budget=5))
-    b = ParamsConfig(optimizer=OptimizerConfig(type="bayesian", budget=5))
-    with pytest.raises(ValueError, match="optimizer"):
-        validate_params_match(a, b)
-
-
-def test_merge_params_override() -> None:
-    base = ParamsConfig(
-        optimizer=OptimizerConfig(type="grid", budget=5),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
-        static_params={"seed": 1},
-    )
-    override = ParamsConfig(
-        optimizer=OptimizerConfig(type="bayesian", budget=10),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.0, high=2.0)],
-        static_params={"seed": 2},
-    )
-    merged = merge_params(base, override)
-    assert merged.optimizer.type == "bayesian"
-    assert merged.optimizer.budget == 10
-    assert merged.parameters[0].low == 0.0
-    assert merged.parameters[0].high == 2.0
-    assert merged.static_params == {"seed": 2}
-
-
-def test_merge_params_deepcopy_prevents_mutation_leak() -> None:
-    base = ParamsConfig(
-        optimizer=OptimizerConfig(type="bayesian"),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
-        static_params={"a": [1, 2]},
-    )
-    override = ParamsConfig(
-        optimizer=OptimizerConfig(type="grid"),
-        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
-        static_params={"a": [3, 4]},
-    )
-    merged = merge_params(base, override)
-    # Mutate merged nested fields
-    merged.parameters[0].low = 99.0
-    merged.static_params["a"].append(99)
-    # Base must remain unchanged
-    assert base.parameters[0].low == 0.1
-    assert base.static_params["a"] == [1, 2]
+    suite = load_tests_default()
+    assert all(t.prompt.strip() for t in suite.tests)
+    assert all(t.repeat >= 5 for t in suite.tests)

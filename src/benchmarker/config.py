@@ -1,7 +1,8 @@
-"""Configuration models and loaders for benchmarker (Phase 2).
+"""Configuration models and loaders for benchmarker (Phase 2 + YAML benchmarks).
 
 Defines Pydantic models for the parameter search space (YAML) and the test
-suite (JSON), plus loader functions. Validation logic is centralized here.
+suite (JSON / YAML), plus loader functions. Validation logic is centralized
+here.
 """
 
 from __future__ import annotations
@@ -209,70 +210,8 @@ def validate_params(config: ParamsConfig) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Loaders
+# Legacy loaders (tests.json)
 # --------------------------------------------------------------------------- #
-def validate_params_match(a: ParamsConfig | None, b: ParamsConfig | None) -> None:
-    """Validate that two ``ParamsConfig`` objects are compatible for merging.
-
-    Checks:
-    - ``optimizer.type``
-    - ``optimizer.budget``
-    - ``optimizer.baseline``
-    - ``parameters`` — compared by ``name``, ``type``, ``low``, ``high``,
-      ``step``, and ``choices``
-    - ``static_params`` — deep equality
-
-    If either argument is ``None`` the check passes (None means "use
-    defaults").
-
-    Raises:
-        ValueError: describing the first mismatched field found.
-    """
-    if a is None or b is None:
-        return
-
-    def _eq(left: Any, right: Any, path: str) -> None:
-        if left != right:
-            raise ValueError(f"{path}: {left!r} != {right!r}")
-
-    _eq(a.optimizer.type, b.optimizer.type, "optimizer.type")
-    _eq(a.optimizer.budget, b.optimizer.budget, "optimizer.budget")
-    _eq(a.optimizer.baseline, b.optimizer.baseline, "optimizer.baseline")
-
-    if len(a.parameters) != len(b.parameters):
-        raise ValueError(
-            f"parameters length mismatch: {len(a.parameters)} != {len(b.parameters)}"
-        )
-    for idx, (pa, pb) in enumerate(zip(a.parameters, b.parameters)):
-        prefix = f"parameters[{idx}]"
-        _eq(pa.name, pb.name, f"{prefix}.name")
-        _eq(pa.type, pb.type, f"{prefix}.type")
-        _eq(pa.low, pb.low, f"{prefix}.low")
-        _eq(pa.high, pb.high, f"{prefix}.high")
-        _eq(pa.step, pb.step, f"{prefix}.step")
-        _eq(pa.choices, pb.choices, f"{prefix}.choices")
-
-    _eq(a.static_params, b.static_params, "static_params")
-
-
-def merge_params(base: ParamsConfig, override: ParamsConfig) -> ParamsConfig:
-    """Merge *override* on top of *base*, returning a new ``ParamsConfig``.
-
-    All top-level fields from *override* replace the corresponding fields
-    in *base*. Nested dicts/lists are deep-copied so mutations on the
-    result do not leak back to either input.
-
-    Raises:
-        ValueError: if the two configs are not compatible (use
-            :func:`validate_params_match` first).
-    """
-    return ParamsConfig(
-        optimizer=copy.deepcopy(override.optimizer),
-        parameters=[copy.deepcopy(p) for p in override.parameters],
-        static_params=copy.deepcopy(override.static_params),
-    )
-
-
 def load_params(path: Path) -> ParamsConfig:
     """Load and validate a parameter search-space YAML file.
 
@@ -391,33 +330,18 @@ def load_tests(path: Path) -> TestSuite:
     if not path.exists():
         raise FileNotFoundError(f"Test suite not found: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
-    # The on-disk format is a JSON array of test cases. If a wrapped object is
-    # provided instead, normalize it to the array form.
     if isinstance(raw, dict):
         raw = raw.get("tests", [])
-
-    tests: list[dict[str, Any]] = []
+    # Legacy format requires explicit ids.
     seen: set[str] = set()
     for item in raw:
         tc_id = item.get("id")
-        if not isinstance(tc_id, str) or not tc_id.strip():
-            raise ValidationError.from_exception_data(
-                "TestCase",
-                [
-                    {
-                        "type": "value_error",
-                        "loc": ("id",),
-                        "input": tc_id,
-                        "ctx": {"error": "test case requires 'id'"},
-                    }
-                ],
-            )
+        if tc_id is None:
+            raise ValueError("missing test id in legacy JSON file")
         if tc_id in seen:
             raise ValueError(f"duplicate test id: {tc_id!r}")
         seen.add(tc_id)
-        tests.append(item)
-
-    return TestSuite(tests=tests)
+    return TestSuite(tests=raw)
 
 
 def discover_categories(path: Path) -> list[str]:
@@ -434,7 +358,7 @@ def discover_categories(path: Path) -> list[str]:
 
 
 def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> TestSuite:
-    """Load benchmark prompts from a category directory structure.
+    """Load benchmark prompts from a legacy category directory structure.
 
     Each immediate subdirectory of *path* is treated as a category slug.
     JSON files are searched recursively within each category directory so
@@ -485,6 +409,8 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
                 items = raw
             for item in items:
                 tc_id = item.get("id")
+                if tc_id is None:
+                    raise ValueError("missing test id in legacy JSON file")
                 if tc_id in seen:
                     raise ValueError(f"duplicate test id: {tc_id!r}")
                 seen.add(tc_id)
@@ -494,6 +420,129 @@ def load_tests_from_dir(path: Path, categories: list[str] | None = None) -> Test
     return TestSuite(tests=tests, categories=category_map)
 
 
+# --------------------------------------------------------------------------- #
+# YAML benchmark file helpers
+# --------------------------------------------------------------------------- #
+def _unique_ids(tests: list[TestCase]) -> list[TestCase]:
+    """Validate that explicit ids are unique (skip None ids)."""
+    seen: set[str] = set()
+    for tc in tests:
+        if tc.id is not None:
+            if tc.id in seen:
+                raise ValueError(f"duplicate test id: {tc.id!r}")
+            seen.add(tc.id)
+    return tests
+
+
+def _autoid(tests: list[TestCase], stem: str) -> list[TestCase]:
+    """Assign auto-generated ids to entries where id is None."""
+    counter = 1
+    for tc in tests:
+        if tc.id is None:
+            tc.id = f"{stem}-test-{counter}"
+            counter += 1
+    return tests
+
+
+def load_benchmark_file(path: Path) -> tuple[TestSuite, ParamsConfig | None]:
+    """Load a self-contained YAML benchmark file.
+
+    Expected shape:
+
+    ```yaml
+    optimizer:
+      type: bayesian
+      budget: 20
+    parameters:
+      - name: temperature
+        type: float
+        low: 0.0
+        high: 1.5
+        step: 0.1
+    static_params:
+      key: value
+    tests:
+      - id: optional
+        prompt: "..."
+        # system, max_tokens, repeat, reasoning
+    ```
+
+    Returns a ``(TestSuite, ParamsConfig | None)`` tuple. ``params`` is ``None``
+    when the ``optimizer`` key is absent entirely (signals fallback to bundled
+    defaults).
+
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        ValidationError: if the content is invalid.
+        ValueError: if duplicate or missing ids are detected.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Benchmark file not found: {path}")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+    # Extract top-level keys
+    optimizer_data = raw.get("optimizer")
+    parameters_data = raw.get("parameters", [])
+    static_params = raw.get("static_params", {})
+    tests_data = raw.get("tests", [])
+
+    # Normalize tests to a list
+    if isinstance(tests_data, dict):
+        tests_data = tests_data.get("tests", [tests_data])
+
+    # Build ParamsConfig if optimizer is present
+    params: ParamsConfig | None = None
+    if optimizer_data is not None:
+        params_payload = {
+            "optimizer": optimizer_data,
+            "parameters": parameters_data,
+            "static_params": static_params,
+        }
+        params = ParamsConfig.model_validate(params_payload)
+        validate_params(params)
+
+    # Build and validate tests
+    tests = [TestCase.model_validate(item) for item in tests_data]
+    tests = _unique_ids(tests)
+    stem = path.stem
+    tests = _autoid(tests, stem)
+
+    # Final verification that all ids are unique after auto-id
+    seen: set[str] = set()
+    category_map: dict[str, str] = {}
+    for tc in tests:
+        if tc.id in seen:
+            raise ValueError(f"duplicate test id: {tc.id!r}")
+        seen.add(tc.id)
+        category_map[tc.id] = stem
+
+    return TestSuite(tests=tests, categories=category_map), params
+
+
+def discover_benchmark_files(path: Path) -> list[Path]:
+    """Return sorted benchmark YAML files under *path*.
+
+    - If *path* is a file, return ``[path]`` when it ends in ``.yaml`` or
+      ``.yml``, otherwise ``[]``.
+    - If *path* is a directory, recursively collect ``**/*.yaml`` and
+      ``**/*.yml`` files.
+    """
+    path = Path(path)
+    if path.is_file():
+        if path.suffix.lower() in (".yaml", ".yml"):
+            return [path]
+        return []
+    if not path.is_dir():
+        return []
+    return sorted(
+        p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in (".yaml", ".yml")
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Bundled defaults
+# --------------------------------------------------------------------------- #
 def load_params_default() -> ParamsConfig:
     """Load the bundled default parameter search space."""
     config = _load_bundled("params.default.yaml", load_params)
@@ -501,12 +550,25 @@ def load_params_default() -> ParamsConfig:
 
 
 def load_tests_default() -> TestSuite:
-    """Load the bundled default test suite."""
+    """Load the bundled default test suite from self-contained YAML files."""
     from importlib import resources
 
     ref = resources.files("benchmarker.defaults").joinpath("benchmarks")
     with resources.as_file(ref) as path:
-        return load_tests_from_dir(path)
+        files = discover_benchmark_files(path)
+        merged_tests: list[TestCase] = []
+        merged_categories: dict[str, str] = {}
+        for f in files:
+            suite, _ = load_benchmark_file(f)
+            merged_tests.extend(suite.tests)
+            merged_categories.update(suite.categories)
+        # Final uniqueness check across all defaults
+        seen: set[str] = set()
+        for tc in merged_tests:
+            if tc.id in seen:
+                raise ValueError(f"duplicate test id: {tc.id!r}")
+            seen.add(tc.id)
+        return TestSuite(tests=merged_tests, categories=merged_categories)
 
 
 def _load_bundled(name: str, loader: Callable[[Path], Any]) -> Any:

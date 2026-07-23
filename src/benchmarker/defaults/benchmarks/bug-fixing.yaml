@@ -1,0 +1,61 @@
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+  - name: top_p
+    type: float
+    low: 0.1
+    high: 1.0
+    step: 0.1
+  - name: min_p
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+  - name: repeat_penalty
+    type: float
+    low: 1.0
+    high: 1.2
+    step: 0.1
+  - name: frequency_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+  - name: presence_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: bugfixing
+    prompt: |
+      You are a debugging assistant. Explain the bug in the following code, then provide the corrected version. Start with a brief explanation, then output only the fixed function code.
+
+      Broken code:
+      def calculate_average(numbers):
+          total = 0
+          for i in range(len(numbers)):
+              if i == 0:
+                  total = numbers[i]
+              else:
+                  total = total + numbers[i]
+          return total / len(numbers) if len(numbers) > 0 else 0
+
+      Hint: There is a subtle logic error. What happens with the first element?
+    max_tokens: 2048
+    repeat: 5
+    reasoning: true
