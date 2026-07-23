@@ -25,4 +25,5 @@ uv.lock
 *.md
 !README.md
 !PLANS.md
+!DOCS.md
 quick_run/
