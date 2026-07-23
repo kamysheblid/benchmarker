@@ -15,12 +15,14 @@ from rich.table import Table
 
 from benchmarker.client import LLMClient
 from benchmarker.config import (
-    discover_categories,
+    TestSuite,
+    discover_benchmark_files,
+    load_benchmark_file,
     load_params,
     load_params_default,
     load_tests,
     load_tests_default,
-    load_tests_from_dir,
+    validate_params_match,
 )
 from benchmarker.logging import setup_logging
 from benchmarker.optimizers import create_optimizer
@@ -138,39 +140,15 @@ def init(target_dir: Path, force: bool) -> None:
 # ------------------------------------------------------------------ #
 #  run                                                                #
 # ------------------------------------------------------------------ #
-def _parse_categories(ctx, param, value):
-    if value is None:
-        return None
-    slugs = [s.strip() for s in value.split(",")]
-    bad = [s for s in slugs if not s]
-    if bad:
-        raise click.BadParameter(f"Empty category slugs are not allowed: {bad}")
-    return slugs
-
-
 @main.command()
 @click.option("--model", default="default", show_default=True, help="Model name to benchmark.")
 @click.option(
-    "--tests",
-    "tests_path",
+    "--benchmarks",
+    "benchmarks_path",
     default="benchmarks",
     show_default=True,
     type=click.Path(path_type=Path),
-    help="Path to the test suite JSON file or benchmarks/ directory (falls back to bundled default if missing).",
-)
-@click.option(
-    "--categories",
-    default=None,
-    callback=_parse_categories,
-    help="Comma-separated list of category slugs to load (directory mode only).",
-)
-@click.option(
-    "--params",
-    "params_path",
-    default="params.yaml",
-    show_default=True,
-    type=click.Path(path_type=Path),
-    help="Path to the parameter search-space YAML (falls back to bundled default if missing).",
+    help="Path to a benchmark YAML file or a directory of benchmark YAML files.",
 )
 @click.option(
     "--url",
@@ -239,9 +217,7 @@ def _parse_categories(ctx, param, value):
 )
 def run(
     model: str,
-    tests_path: Path,
-    categories: list[str] | None,
-    params_path: Path,
+    benchmarks_path: Path,
     url: str | None,
     run_dir: Path,
     csv_path: Path | None,
@@ -255,35 +231,66 @@ def run(
 ) -> None:
     """Run a benchmark for the given model."""
     setup_logging(run_dir=run_dir, verbose=verbose)
-    logger.info("Starting benchmark: model=%s, tests=%s, params=%s, run_dir=%s", model, tests_path, params_path, run_dir)
 
-    if tests_path.exists():
-        if tests_path.is_file():
-            if categories is not None:
-                raise click.BadParameter(
-                    "--categories is only valid when --tests is a directory (benchmarks/). "
-                    "For flat test files, omit --categories."
-                )
-            suite = load_tests(tests_path)
+    # ------------------------------------------------------------------ #
+    #  Resolve benchmark files                                            #
+    # ------------------------------------------------------------------ #
+    benchmark_files: list[Path] = []
+    params_source: Path | None = None
+    if benchmarks_path.exists() and benchmarks_path.is_file() and benchmarks_path.suffix == ".json":
+        logger.info("Loading legacy JSON test suite: %s", benchmarks_path)
+        suite = load_tests(benchmarks_path)
+        params = None
+        benchmark_files = [benchmarks_path]
+    else:
+        benchmark_files = discover_benchmark_files(benchmarks_path)
+        if not benchmark_files:
+            logger.info("(no %s found — using bundled default test suite)", benchmarks_path)
+            suite = load_tests_default()
+            params = None
         else:
-            valid_categories = discover_categories(tests_path)
-            if categories is not None:
-                invalid = [c for c in categories if c not in valid_categories]
-                if invalid:
-                    raise click.BadParameter(
-                        f"Invalid categories: {', '.join(invalid)}. "
-                        f"Valid categories: {', '.join(valid_categories)}"
-                    )
-            suite = load_tests_from_dir(tests_path, categories=categories)
-    else:
-        logger.info("(no %s found — using bundled default test suite)", tests_path)
-        suite = load_tests_default()
-    if params_path.exists():
-        params = load_params(params_path)
-    else:
-        logger.info("(no %s found — using bundled default params)", params_path)
+            merged_suite = TestSuite()
+            resolved_params: ParamsConfig | None = None
+            params_source: Path | None = None
+            for file in benchmark_files:
+                file_suite, file_params = load_benchmark_file(file)
+                merged_suite.tests.extend(file_suite.tests)
+                merged_suite.categories.update(file_suite.categories)
+                if file_params is not None:
+                    if resolved_params is None:
+                        resolved_params = file_params
+                        params_source = file
+                    else:
+                        validate_params_match(resolved_params, file_params)
+            # Final uniqueness check on merged tests
+            seen: set[str] = set()
+            for test in merged_suite.tests:
+                if test.id in seen:
+                    raise ValueError(f"duplicate test id across benchmark files: {test.id!r}")
+                seen.add(test.id)
+            suite = merged_suite
+            if resolved_params is None:
+                logger.info("(no params in benchmark files — using bundled default params)")
+                params = load_params_default()
+                params_source = None
+            else:
+                params = resolved_params
+            logger.info(
+                "Loaded %d benchmark file(s), %d tests total.",
+                len(benchmark_files),
+                len(suite.tests),
+            )
+
+    if params is None:
         params = load_params_default()
 
+    logger.info(
+        "Starting benchmark: model=%s, tests=%d, params=%d, run_dir=%s",
+        model,
+        len(suite.tests),
+        len(params.parameters),
+        run_dir,
+    )
     logger.info(
         "Loaded %d tests and %d parameters (optimizer=%s, budget=%d).",
         len(suite.tests),
@@ -310,6 +317,15 @@ def run(
         force=force,
     )
     results, auto_scores = asyncio.run(runner.run())
+
+    # Write benchmark metadata after the run completes.
+    meta = {
+        "benchmark_files": [str(p) for p in benchmark_files],
+        "params_source": str(params_source) if params_source else None,
+    }
+    (run_dir / "run_meta.json").write_text(
+        json.dumps(meta, indent=2, default=str), encoding="utf-8"
+    )
 
     _print_quality_table(results)
     if csv_path:
