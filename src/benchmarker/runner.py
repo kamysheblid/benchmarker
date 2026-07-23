@@ -39,6 +39,7 @@ class RunResult(BaseModel):
     test_id: str
     repetition: int
     prompt: str
+    system: str | None = None
     response_text: str
     ttft: float
     total_time: float
@@ -372,6 +373,7 @@ class Runner:
                     test_id=test.id,
                     repetition=rep,
                     prompt=test.prompt,
+                    system=test.system,
                     response_text=completion.response_text,
                     ttft=completion.ttft,
                     total_time=completion.total_time,
@@ -398,6 +400,7 @@ class Runner:
             test_id=test.id,
             repetition=rep,
             prompt=test.prompt,
+            system=test.system,
             response_text="",
             ttft=0.0,
             total_time=0.0,

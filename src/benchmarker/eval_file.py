@@ -22,8 +22,12 @@ CONFIG_MAP_FILE = "config_map.json"
 def _render_result(r: Any) -> str:
     """Render a single RunResult as a markdown block."""
     err = f"\n\n> **ERROR:** {r.error}" if r.error else ""
+    system_block = ""
+    if r.system:
+        system_block = f"**System Prompt:**\n\n```\n{r.system}\n```\n\n"
     return (
         f"**Prompt:**\n\n```\n{r.prompt}\n```\n\n"
+        f"{system_block}"
         f"**Response:**\n\n```\n{r.response_text}\n```{err}\n\n"
         f"*metrics — ttft: {r.ttft:.3f}s, total: {r.total_time:.3f}s, "
         f"{r.tokens_per_sec:.2f} tok/s, prompt_tokens={r.prompt_tokens}, "
@@ -258,12 +262,7 @@ def generate_judge_prompt(
                 f"avg tokens_per_sec: {avg_speed:.2f}*\n"
             )
             for r in cat_items:
-                preview = r.response_text[:200]
-                if len(r.response_text) > 200:
-                    preview += "..."
-                sections.append(
-                    f"- **`{r.test_id}`** (rep {r.repetition}): {preview}\n"
-                )
+                sections.append(_render_result(r))
 
     body = "\n".join(sections)
     content = body + "\n\n" + _build_judge_instructions(categories)
