@@ -3,6 +3,5 @@
   "prompt": "You are a code quality assistant. Refactor the following Python function to improve readability and add complete type hints. Output only the refactored function code with no explanation.\n\nTask:\ndef process_data(data, opts):\n    x = []\n    for i in range(len(data)):\n        if data[i] > 0:\n            y = data[i] * opts.get('mult', 1)\n            if opts.get('offset'):\n                y = y + opts['offset']\n            if opts.get('round'):\n                y = round(y, opts['round'])\n            x.append(y)\n    return x",
   "max_tokens": 2048,
   "repeat": 5,
-  "reasoning": false,
-  "stop": ["\ndef ", "\nclass "]
+  "reasoning": false
 }

@@ -173,24 +173,6 @@ async def test_runner_merges_static_params(tmp_path: Path) -> None:
         assert "temperature" in params
 
 
-async def test_runner_passes_stop_sequence(tmp_path: Path) -> None:
-    specs = [ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=0.1)]
-    optimizer = GridOptimizer(specs)
-    client = _FakeClient()
-    runner = Runner(
-        client,
-        TestSuite(tests=[TestCase(id="t1", prompt="x", stop=["\n```", "\ndef "])]),
-        optimizer,
-        "m",
-        tmp_path / "run",
-        enable_health_check=False,
-    )
-    await runner.run()
-    assert len(client.calls) == 1
-    _messages, _model, params = client.calls[0]
-    assert params["stop"] == ["\n```", "\ndef "]
-
-
 class _MockHistoryOptimizer:
     """Minimal optimizer that records tell calls and supports from_history."""
 

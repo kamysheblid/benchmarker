@@ -3,6 +3,5 @@
   "prompt": "You are a code generation assistant. Return a complete Python function with a one-line docstring. Do not include any explanation. Only output the function code.\n\nTask: Write a function def chunk(seq, n) that splits a sequence into consecutive chunks of size n, with the final chunk containing any remainder. Include a one-line docstring and a short usage example in a comment.",
   "max_tokens": 2048,
   "repeat": 5,
-  "reasoning": false,
-  "stop": ["\ndef ", "\nclass "]
+  "reasoning": false
 }
