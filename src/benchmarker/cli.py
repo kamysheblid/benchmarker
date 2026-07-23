@@ -378,12 +378,11 @@ def run(
 @main.command()
 @click.argument("reply_file", type=click.Path(path_type=Path), required=False)
 @click.option(
-    "--params",
-    "params_path",
-    default="params.yaml",
-    show_default=True,
+    "--benchmark-file",
+    "benchmark_file",
+    default=None,
     type=click.Path(path_type=Path),
-    help="Path to the parameter YAML to update when refining.",
+    help="Path to the benchmark YAML file to update. Inferred from --run-dir if omitted.",
 )
 @click.option(
     "--run-dir",
@@ -392,7 +391,7 @@ def run(
     type=click.Path(path_type=Path),
     help="Run directory to load config_map.json from for config lookup.",
 )
-def parse(reply_file: Path | None, params_path: Path, run_dir: Path | None) -> None:
+def parse(reply_file: Path | None, benchmark_file: Path | None, run_dir: Path | None) -> None:
     """Parse the judge's reply and take action (conclude / refine / expand).
 
     If REPLY_FILE is provided, read it; otherwise read from stdin.
@@ -409,8 +408,21 @@ def parse(reply_file: Path | None, params_path: Path, run_dir: Path | None) -> N
 
         text = sys.stdin.read()
 
+    # Infer benchmark file from run_meta.json when --benchmark-file is omitted
+    benchmark_source = benchmark_file
+    if benchmark_source is None and run_dir is not None:
+        meta_path = run_dir / "run_meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                inferred = meta.get("benchmark_file")
+                if inferred:
+                    benchmark_source = Path(inferred)
+            except (json.JSONDecodeError, OSError):
+                pass
+
     try:
-        parse_and_act(text, params_path=params_path, run_dir=run_dir)
+        parse_and_act(text, benchmark_source=benchmark_source, run_dir=run_dir)
     except ValueError as exc:
         click.echo(f"Error parsing judge reply: {exc}", err=True)
         click.echo("\nRaw text received:", err=True)

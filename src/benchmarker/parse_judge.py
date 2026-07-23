@@ -379,13 +379,16 @@ def handle_judge_reply(
     text: str,
     params_path: str | Path = "params.yaml",
     run_dir: str | Path | None = None,
+    benchmark_source: Path | None = None,
 ) -> JudgeVerdict:
-    """Parse judge reply, print verdict, and update params.yaml if needed.
+    """Parse judge reply, print verdict, and update params.yaml or benchmark YAML if needed.
 
     Args:
         text: Raw judge reply text.
         params_path: Path to params.yaml to update (for refine/expand).
         run_dir: Optional run directory to load config_map.json from.
+        benchmark_source: Optional benchmark YAML file to update in place.
+            If provided, takes precedence over params_path for refine/expand.
 
     Returns:
         The parsed :class:`JudgeVerdict`.
@@ -397,7 +400,6 @@ def handle_judge_reply(
     print(format_verdict(verdict))
 
     # Act based on recommendation
-    params_path = Path(params_path)
     if verdict.recommendation == "conclude":
         # Find and print the best config
         if verdict.scores:
@@ -408,21 +410,38 @@ def handle_judge_reply(
         else:
             print("\n⚠️  No scores available to determine best config.")
 
-    elif verdict.recommendation == "refine":
-        print("\n🔧 Refining parameter ranges...")
-        params_data = _load_params_yaml(params_path)
-        updated = _update_params_for_refine(params_data, verdict, config_map)
-        _save_params_yaml(params_path, updated)
-        print(f"Updated {params_path} with narrowed ranges and finer steps.")
-        print("Run 'benchmarker run' again to continue.")
-
-    elif verdict.recommendation == "expand":
-        print("\n📈 Expanding parameter ranges...")
-        params_data = _load_params_yaml(params_path)
-        updated = _update_params_for_expand(params_data, verdict)
-        _save_params_yaml(params_path, updated)
-        print(f"Updated {params_path} with widened ranges.")
-        print("Run 'benchmarker run' again to continue.")
+    elif verdict.recommendation in ("refine", "expand"):
+        if benchmark_source is not None:
+            print(f"\n🔧 Updating benchmark file {benchmark_source}...")
+            benchmark_data = yaml.safe_load(benchmark_source.read_text(encoding="utf-8")) or {}
+            if not isinstance(benchmark_data, dict):
+                benchmark_data = {}
+            if verdict.recommendation == "refine":
+                updated = _update_params_for_refine(benchmark_data, verdict, config_map)
+            else:
+                updated = _update_params_for_expand(benchmark_data, verdict)
+            benchmark_source.write_text(
+                yaml.safe_dump(updated, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+            print(f"Updated {benchmark_source} with {'narrowed' if verdict.recommendation == 'refine' else 'widened'} ranges.")
+            print("Run 'benchmarker run' again to continue.")
+        else:
+            params_path = Path(params_path)
+            if verdict.recommendation == "refine":
+                print("\n🔧 Refining parameter ranges...")
+                params_data = _load_params_yaml(params_path)
+                updated = _update_params_for_refine(params_data, verdict, config_map)
+                _save_params_yaml(params_path, updated)
+                print(f"Updated {params_path} with narrowed ranges and finer steps.")
+                print("Run 'benchmarker run' again to continue.")
+            else:
+                print("\n📈 Expanding parameter ranges...")
+                params_data = _load_params_yaml(params_path)
+                updated = _update_params_for_expand(params_data, verdict)
+                _save_params_yaml(params_path, updated)
+                print(f"Updated {params_path} with widened ranges.")
+                print("Run 'benchmarker run' again to continue.")
 
     else:
         print(f"\n⚠️  Unknown recommendation: {verdict.recommendation}")
@@ -444,6 +463,7 @@ def parse_and_act(
     text: str,
     params_path: str | Path | None = None,
     run_dir: str | Path | None = None,
+    benchmark_source: Path | None = None,
 ) -> JudgeVerdict:
     """Parse judge reply and print verdict (standalone / CLI entry).
 
@@ -451,8 +471,14 @@ def parse_and_act(
         text: Raw judge reply text.
         params_path: Path to params.yaml to update when refining/expanding.
         run_dir: Optional run directory to load ``config_map.json`` from.
+        benchmark_source: Optional benchmark YAML file to update when refining/expanding.
 
     Returns:
         The parsed :class:`JudgeVerdict`.
     """
-    return handle_judge_reply(text, params_path=params_path or "params.yaml", run_dir=run_dir)
+    return handle_judge_reply(
+        text,
+        params_path=params_path or "params.yaml",
+        run_dir=run_dir,
+        benchmark_source=benchmark_source,
+    )
