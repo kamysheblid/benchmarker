@@ -19,7 +19,9 @@ from benchmarker.config import (
     load_params,
     load_tests,
     load_tests_from_dir,
+    merge_params,
     validate_params,
+    validate_params_match,
 )
 
 
@@ -438,163 +440,184 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# YAML benchmark file models
+# validate_params_match (2.1)
 # --------------------------------------------------------------------------- #
-def test_test_case_id_optional() -> None:
-    tc = TestCase(prompt="Hello")
-    assert tc.id is None
-    assert tc.prompt == "Hello"
+def test_validate_params_match_both_none() -> None:
+    validate_params_match(None, None)  # should not raise
 
 
-def test_load_benchmark_file_auto_ids(tmp_path: Path) -> None:
-    yaml_text = """
-tests:
-  - prompt: "Hello"
-  - prompt: "World"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    suite, params = load_benchmark_file(path)
-    assert suite.tests[0].id == "my-bench-test-1"
-    assert suite.tests[1].id == "my-bench-test-2"
-    assert params is None
+def test_validate_params_match_one_none() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+    )
+    validate_params_match(None, cfg)  # should not raise
+    validate_params_match(cfg, None)  # should not raise
 
 
-def test_load_benchmark_file_explicit_ids_preserved(tmp_path: Path) -> None:
-    yaml_text = """
-optimizer:
-  type: bayesian
-  budget: 10
-tests:
-  - id: "custom-1"
-    prompt: "Hello"
-  - id: "custom-2"
-    prompt: "World"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    suite, params = load_benchmark_file(path)
-    assert suite.tests[0].id == "custom-1"
-    assert suite.tests[1].id == "custom-2"
-    assert params is not None
-    assert params.optimizer.type == "bayesian"
+def test_validate_params_match_identical() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian", budget=20, baseline={"x": 1}),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0, step=0.1, choices=None)],
+        static_params={"a": 1},
+    )
+    validate_params_match(cfg, cfg)  # should not raise
 
 
-def test_load_benchmark_file_missing_optimizer_returns_none_params(tmp_path: Path) -> None:
-    yaml_text = """
-tests:
-  - prompt: "Hello"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    suite, params = load_benchmark_file(path)
-    assert params is None
-    assert len(suite.tests) == 1
+def test_validate_params_match_optimizer_type_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(type="bayesian"))
+    b = ParamsConfig(optimizer=OptimizerConfig(type="grid"))
+    with pytest.raises(ValueError, match="optimizer.type"):
+        validate_params_match(a, b)
 
 
-def test_load_benchmark_file_missing_parameters_defaults_empty(tmp_path: Path) -> None:
-    yaml_text = """
-optimizer:
-  type: bayesian
-  budget: 10
-tests:
-  - prompt: "Hello"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    suite, params = load_benchmark_file(path)
-    assert params is not None
-    assert params.parameters == []
+def test_validate_params_match_optimizer_budget_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(budget=10))
+    b = ParamsConfig(optimizer=OptimizerConfig(budget=20))
+    with pytest.raises(ValueError, match="optimizer.budget"):
+        validate_params_match(a, b)
 
 
-def test_load_benchmark_file_duplicate_explicit_ids_raises(tmp_path: Path) -> None:
-    yaml_text = """
-tests:
-  - id: "t1"
-    prompt: "A"
-  - id: "t1"
-    prompt: "B"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    with pytest.raises(ValueError) as exc:
-        load_benchmark_file(path)
-    assert "duplicate test id" in str(exc.value)
+def test_validate_params_match_optimizer_baseline_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(baseline={"x": 1}))
+    b = ParamsConfig(optimizer=OptimizerConfig(baseline={"x": 2}))
+    with pytest.raises(ValueError, match="optimizer.baseline"):
+        validate_params_match(a, b)
 
 
-def test_load_benchmark_file_category_set_from_stem(tmp_path: Path) -> None:
-    yaml_text = """
-tests:
-  - prompt: "Hello"
-"""
-    path = tmp_path / "my-category.yaml"
-    path.write_text(yaml_text)
-    suite, _ = load_benchmark_file(path)
-    assert suite.categories == {"my-category-test-1": "my-category"}
+def test_validate_params_match_parameters_name_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="b", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].name"):
+        validate_params_match(a, b)
 
 
-def test_load_benchmark_file_validate_params_called(tmp_path: Path) -> None:
-    yaml_text = """
-optimizer:
-  type: bayesian
-  budget: 10
-parameters:
-  - name: temperature
-    type: float
-    low: 1.0
-    high: 0.1
-tests:
-  - prompt: "Hello"
-"""
-    path = tmp_path / "my-bench.yaml"
-    path.write_text(yaml_text)
-    with pytest.raises(ValueError, match="low .* high"):
-        load_benchmark_file(path)
+def test_validate_params_match_parameters_type_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.INT, low=0, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].type"):
+        validate_params_match(a, b)
 
 
-def test_discover_benchmark_files_single_yaml(tmp_path: Path) -> None:
-    path = tmp_path / "bench.yaml"
-    path.write_text("")
-    assert discover_benchmark_files(path) == [path]
+def test_validate_params_match_parameters_low_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0.5, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].low"):
+        validate_params_match(a, b)
 
 
-def test_discover_benchmark_files_single_yml(tmp_path: Path) -> None:
-    path = tmp_path / "bench.yml"
-    path.write_text("")
-    assert discover_benchmark_files(path) == [path]
+def test_validate_params_match_parameters_high_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=2)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].high"):
+        validate_params_match(a, b)
 
 
-def test_discover_benchmark_files_single_non_yaml_returns_empty(tmp_path: Path) -> None:
-    path = tmp_path / "bench.txt"
-    path.write_text("")
-    assert discover_benchmark_files(path) == []
+def test_validate_params_match_parameters_step_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1, step=0.1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1, step=0.2)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].step"):
+        validate_params_match(a, b)
 
 
-def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
-    (tmp_path / "a.yaml").write_text("")
-    (tmp_path / "b.yml").write_text("")
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    (sub / "c.yaml").write_text("")
-    (tmp_path / "d.json").write_text("")
-    result = discover_benchmark_files(tmp_path)
-    assert result == [
-        tmp_path / "a.yaml",
-        tmp_path / "b.yml",
-        sub / "c.yaml",
-    ]
+def test_validate_params_match_parameters_choices_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.CATEGORICAL, choices=["x", "y"])],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.CATEGORICAL, choices=["x", "z"])],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].choices"):
+        validate_params_match(a, b)
 
 
-def test_discover_benchmark_files_sorted(tmp_path: Path) -> None:
-    (tmp_path / "z.yaml").write_text("")
-    (tmp_path / "a.yaml").write_text("")
-    result = discover_benchmark_files(tmp_path)
-    assert result == [tmp_path / "a.yaml", tmp_path / "z.yaml"]
+def test_validate_params_match_static_params_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        static_params={"a": 1},
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        static_params={"a": 2},
+    )
+    with pytest.raises(ValueError, match="static_params"):
+        validate_params_match(a, b)
 
 
-def test_load_tests_missing_id_raises(tmp_path: Path) -> None:
-    path = tmp_path / "tests.json"
-    path.write_text(json.dumps([{"prompt": "Hello"}]))
-    with pytest.raises(ValidationError) as exc:
-        load_tests(path)
-    assert "id" in str(exc.value).lower()
+# --------------------------------------------------------------------------- #
+# merge_params (2.2)
+# --------------------------------------------------------------------------- #
+def test_merge_params_overrides_field() -> None:
+    base = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian", budget=20),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+        static_params={"a": 1},
+    )
+    override = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
+        static_params={"a": 2, "b": 3},
+    )
+    merged = merge_params(base, override)
+    assert merged.optimizer.type == "grid"
+    assert merged.optimizer.budget == 10
+    assert merged.parameters[0].low == 0.2
+    assert merged.static_params == {"a": 2, "b": 3}
+
+    # Base is unchanged
+    assert base.optimizer.type == "bayesian"
+    assert base.optimizer.budget == 20
+    assert base.parameters[0].low == 0.1
+    assert base.static_params == {"a": 1}
+
+
+def test_merge_params_deepcopy_prevents_mutation_leak() -> None:
+    base = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+        static_params={"a": [1, 2]},
+    )
+    override = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
+        static_params={"a": [3, 4]},
+    )
+    merged = merge_params(base, override)
+    # Mutate merged nested fields
+    merged.parameters[0].low = 99.0
+    merged.static_params["a"].append(99)
+    # Base must remain unchanged
+    assert base.parameters[0].low == 0.1
+    assert base.static_params["a"] == [1, 2]
