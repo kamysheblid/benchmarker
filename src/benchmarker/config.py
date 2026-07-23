@@ -109,7 +109,7 @@ class TestCase(BaseModel):
     model_config = ConfigDict(extra="forbid")
     __test__ = False  # prevent pytest from collecting this Pydantic model as a test case
 
-    id: str
+    id: str | None = None
     prompt: str
     system: str | None = None
     max_tokens: PositiveInt | None = None
@@ -139,18 +139,35 @@ class TestSuite(BaseModel):
 
     tests: list[TestCase] = Field(default_factory=list)
     categories: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("tests")
-    @classmethod
-    def _unique_ids(cls, tests: list[TestCase]) -> list[TestCase]:
-        seen: set[str] = set()
-        for tc in tests:
-            if tc.id in seen:
-                raise ValueError(f"duplicate test id: {tc.id!r}")
-            seen.add(tc.id)
-        return tests
+    params: ParamsConfig | None = None
 
 
+# --------------------------------------------------------------------------- #
+# Post-load helpers for YAML benchmark files
+# --------------------------------------------------------------------------- #
+def _unique_ids(tests: list[TestCase], source_name: str) -> list[TestCase]:
+    """Validate that explicit IDs are unique, skipping ``None`` entries."""
+    seen: set[str] = set()
+    for tc in tests:
+        if tc.id is None:
+            continue
+        if tc.id in seen:
+            raise ValueError(f"duplicate test id: {tc.id!r} in {source_name}")
+        seen.add(tc.id)
+    return tests
+
+
+def _autoid(tests: list[TestCase], stem: str) -> list[TestCase]:
+    """Assign auto-generated IDs to ``None`` entries."""
+    for i, tc in enumerate(tests, start=1):
+        if tc.id is None:
+            tc.id = f"{stem}-test-{i}"
+    return tests
+
+
+# --------------------------------------------------------------------------- #
+# Validation
+# --------------------------------------------------------------------------- #
 def validate_params(config: ParamsConfig) -> None:
     """Validate the search space before any benchmark starts.
 
@@ -190,6 +207,9 @@ def validate_params(config: ParamsConfig) -> None:
                 )
 
 
+# --------------------------------------------------------------------------- #
+# Loaders
+# --------------------------------------------------------------------------- #
 def load_params(path: Path) -> ParamsConfig:
     """Load and validate a parameter search-space YAML file.
 
@@ -206,12 +226,103 @@ def load_params(path: Path) -> ParamsConfig:
     return config
 
 
+def load_benchmark_file(path: Path) -> tuple[TestSuite, ParamsConfig | None]:
+    """Load a YAML benchmark file containing test cases and optional params.
+
+    The expected YAML shape is::
+
+        optimizer:
+          type: bayesian
+          budget: 20
+        parameters: [...]
+        static_params: {...}
+        tests:
+          - prompt: "..."
+            # id optional, repeat, max_tokens, reasoning, system
+
+    If the ``optimizer`` key is absent entirely, ``ParamsConfig`` is returned
+    as ``None`` (signals fallback to bundled defaults).
+
+    If ``optimizer`` is present but ``parameters`` is absent, it is treated as
+    ``parameters: []``.
+
+    After building ``ParamsConfig``, ``validate_params(config)`` is invoked to
+    catch bad ranges before the optimizer sees them.
+
+    Test cases without an explicit ``id`` are auto-numbered using the pattern
+    ``<file-stem>-test-<N>``. The filename stem also becomes the default
+    category for all tests in the file.
+
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        ValidationError: if the content is invalid or params fail validation.
+        ValueError: if duplicate test IDs are found.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Benchmark file not found: {path}")
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+    # Build params if optimizer is present
+    params: ParamsConfig | None = None
+    if "optimizer" in raw:
+        params_data = {k: raw[k] for k in ("optimizer", "parameters", "static_params") if k in raw}
+        if "parameters" not in params_data:
+            params_data["parameters"] = []
+        params = ParamsConfig.model_validate(params_data)
+        validate_params(params)
+
+    # Extract tests
+    tests_raw = raw.get("tests", [])
+    if not isinstance(tests_raw, list):
+        tests_raw = [tests_raw]
+
+    suite = TestSuite(tests=tests_raw)
+    stem = path.stem
+
+    # Pass 1: validate explicit IDs are unique, skip None
+    _unique_ids(suite.tests, stem)
+    # Pass 2: assign auto-ids to None entries
+    _autoid(suite.tests, stem)
+    # Pass 3: final uniqueness check (now all IDs should be present)
+    _unique_ids(suite.tests, stem)
+
+    # Default category mapping
+    suite.categories = {tc.id: stem for tc in suite.tests}
+
+    return suite, params
+
+
+def discover_benchmark_files(path: Path) -> list[Path]:
+    """Return sorted ``.yaml``/``.yml`` benchmark files under *path*.
+
+    - If *path* is a file, return ``[path]`` when it ends in ``.yaml`` or
+      ``.yml``, otherwise ``[]``.
+    - If *path* is a directory, recursively collect all ``*.yaml`` and
+      ``*.yml`` files and return them in sorted order.
+    - For any other path, return ``[]``.
+    """
+    path = Path(path)
+    if path.is_file():
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            return [path]
+        return []
+    if not path.is_dir():
+        return []
+    results: list[Path] = []
+    results.extend(path.rglob("*.yaml"))
+    results.extend(path.rglob("*.yml"))
+    return sorted(set(results))
+
+
 def load_tests(path: Path) -> TestSuite:
     """Load and validate a test-suite JSON file.
 
     Raises:
         FileNotFoundError: if the file does not exist.
         ValidationError: if the content is invalid.
+        ValueError: if duplicate or missing test IDs are found.
     """
     path = Path(path)
     if not path.exists():
@@ -221,7 +332,29 @@ def load_tests(path: Path) -> TestSuite:
     # provided instead, normalize it to the array form.
     if isinstance(raw, dict):
         raw = raw.get("tests", [])
-    return TestSuite(tests=raw)
+
+    tests: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        tc_id = item.get("id")
+        if not isinstance(tc_id, str) or not tc_id.strip():
+            raise ValidationError.from_exception_data(
+                "TestCase",
+                [
+                    {
+                        "type": "value_error",
+                        "loc": ("id",),
+                        "input": tc_id,
+                        "ctx": {"error": "test case requires 'id'"},
+                    }
+                ],
+            )
+        if tc_id in seen:
+            raise ValueError(f"duplicate test id: {tc_id!r}")
+        seen.add(tc_id)
+        tests.append(item)
+
+    return TestSuite(tests=tests)
 
 
 def discover_categories(path: Path) -> list[str]:

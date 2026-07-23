@@ -13,7 +13,9 @@ from benchmarker.config import (
     ParameterType,
     TestCase,
     TestSuite,
+    discover_benchmark_files,
     discover_categories,
+    load_benchmark_file,
     load_params,
     load_tests,
     load_tests_from_dir,
@@ -131,7 +133,7 @@ def test_load_tests_missing_file_raises_with_message(tmp_path: Path) -> None:
 def test_load_tests_duplicate_ids_raises(tmp_path: Path) -> None:
     path = tmp_path / "tests.json"
     path.write_text(json.dumps([{"id": "t1", "prompt": "a"}, {"id": "t1", "prompt": "b"}]))
-    with pytest.raises(ValidationError) as exc:
+    with pytest.raises(ValueError) as exc:
         load_tests(path)
     assert "duplicate test id" in str(exc.value)
 
@@ -433,3 +435,166 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
         ],
     )
     validate_params(cfg)  # should not raise
+
+
+# --------------------------------------------------------------------------- #
+# YAML benchmark file models
+# --------------------------------------------------------------------------- #
+def test_test_case_id_optional() -> None:
+    tc = TestCase(prompt="Hello")
+    assert tc.id is None
+    assert tc.prompt == "Hello"
+
+
+def test_load_benchmark_file_auto_ids(tmp_path: Path) -> None:
+    yaml_text = """
+tests:
+  - prompt: "Hello"
+  - prompt: "World"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    suite, params = load_benchmark_file(path)
+    assert suite.tests[0].id == "my-bench-test-1"
+    assert suite.tests[1].id == "my-bench-test-2"
+    assert params is None
+
+
+def test_load_benchmark_file_explicit_ids_preserved(tmp_path: Path) -> None:
+    yaml_text = """
+optimizer:
+  type: bayesian
+  budget: 10
+tests:
+  - id: "custom-1"
+    prompt: "Hello"
+  - id: "custom-2"
+    prompt: "World"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    suite, params = load_benchmark_file(path)
+    assert suite.tests[0].id == "custom-1"
+    assert suite.tests[1].id == "custom-2"
+    assert params is not None
+    assert params.optimizer.type == "bayesian"
+
+
+def test_load_benchmark_file_missing_optimizer_returns_none_params(tmp_path: Path) -> None:
+    yaml_text = """
+tests:
+  - prompt: "Hello"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    suite, params = load_benchmark_file(path)
+    assert params is None
+    assert len(suite.tests) == 1
+
+
+def test_load_benchmark_file_missing_parameters_defaults_empty(tmp_path: Path) -> None:
+    yaml_text = """
+optimizer:
+  type: bayesian
+  budget: 10
+tests:
+  - prompt: "Hello"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    suite, params = load_benchmark_file(path)
+    assert params is not None
+    assert params.parameters == []
+
+
+def test_load_benchmark_file_duplicate_explicit_ids_raises(tmp_path: Path) -> None:
+    yaml_text = """
+tests:
+  - id: "t1"
+    prompt: "A"
+  - id: "t1"
+    prompt: "B"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    with pytest.raises(ValueError) as exc:
+        load_benchmark_file(path)
+    assert "duplicate test id" in str(exc.value)
+
+
+def test_load_benchmark_file_category_set_from_stem(tmp_path: Path) -> None:
+    yaml_text = """
+tests:
+  - prompt: "Hello"
+"""
+    path = tmp_path / "my-category.yaml"
+    path.write_text(yaml_text)
+    suite, _ = load_benchmark_file(path)
+    assert suite.categories == {"my-category-test-1": "my-category"}
+
+
+def test_load_benchmark_file_validate_params_called(tmp_path: Path) -> None:
+    yaml_text = """
+optimizer:
+  type: bayesian
+  budget: 10
+parameters:
+  - name: temperature
+    type: float
+    low: 1.0
+    high: 0.1
+tests:
+  - prompt: "Hello"
+"""
+    path = tmp_path / "my-bench.yaml"
+    path.write_text(yaml_text)
+    with pytest.raises(ValueError, match="low .* high"):
+        load_benchmark_file(path)
+
+
+def test_discover_benchmark_files_single_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "bench.yaml"
+    path.write_text("")
+    assert discover_benchmark_files(path) == [path]
+
+
+def test_discover_benchmark_files_single_yml(tmp_path: Path) -> None:
+    path = tmp_path / "bench.yml"
+    path.write_text("")
+    assert discover_benchmark_files(path) == [path]
+
+
+def test_discover_benchmark_files_single_non_yaml_returns_empty(tmp_path: Path) -> None:
+    path = tmp_path / "bench.txt"
+    path.write_text("")
+    assert discover_benchmark_files(path) == []
+
+
+def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
+    (tmp_path / "a.yaml").write_text("")
+    (tmp_path / "b.yml").write_text("")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "c.yaml").write_text("")
+    (tmp_path / "d.json").write_text("")
+    result = discover_benchmark_files(tmp_path)
+    assert result == [
+        tmp_path / "a.yaml",
+        tmp_path / "b.yml",
+        sub / "c.yaml",
+    ]
+
+
+def test_discover_benchmark_files_sorted(tmp_path: Path) -> None:
+    (tmp_path / "z.yaml").write_text("")
+    (tmp_path / "a.yaml").write_text("")
+    result = discover_benchmark_files(tmp_path)
+    assert result == [tmp_path / "a.yaml", tmp_path / "z.yaml"]
+
+
+def test_load_tests_missing_id_raises(tmp_path: Path) -> None:
+    path = tmp_path / "tests.json"
+    path.write_text(json.dumps([{"prompt": "Hello"}]))
+    with pytest.raises(ValidationError) as exc:
+        load_tests(path)
+    assert "id" in str(exc.value).lower()
