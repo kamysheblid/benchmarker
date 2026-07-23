@@ -6,6 +6,7 @@ suite (JSON), plus loader functions. Validation logic is centralized here.
 
 from __future__ import annotations
 
+import copy
 import json
 from enum import Enum
 from pathlib import Path
@@ -210,6 +211,68 @@ def validate_params(config: ParamsConfig) -> None:
 # --------------------------------------------------------------------------- #
 # Loaders
 # --------------------------------------------------------------------------- #
+def validate_params_match(a: ParamsConfig | None, b: ParamsConfig | None) -> None:
+    """Validate that two ``ParamsConfig`` objects are compatible for merging.
+
+    Checks:
+    - ``optimizer.type``
+    - ``optimizer.budget``
+    - ``optimizer.baseline``
+    - ``parameters`` — compared by ``name``, ``type``, ``low``, ``high``,
+      ``step``, and ``choices``
+    - ``static_params`` — deep equality
+
+    If either argument is ``None`` the check passes (None means "use
+    defaults").
+
+    Raises:
+        ValueError: describing the first mismatched field found.
+    """
+    if a is None or b is None:
+        return
+
+    def _eq(left: Any, right: Any, path: str) -> None:
+        if left != right:
+            raise ValueError(f"{path}: {left!r} != {right!r}")
+
+    _eq(a.optimizer.type, b.optimizer.type, "optimizer.type")
+    _eq(a.optimizer.budget, b.optimizer.budget, "optimizer.budget")
+    _eq(a.optimizer.baseline, b.optimizer.baseline, "optimizer.baseline")
+
+    if len(a.parameters) != len(b.parameters):
+        raise ValueError(
+            f"parameters length mismatch: {len(a.parameters)} != {len(b.parameters)}"
+        )
+    for idx, (pa, pb) in enumerate(zip(a.parameters, b.parameters)):
+        prefix = f"parameters[{idx}]"
+        _eq(pa.name, pb.name, f"{prefix}.name")
+        _eq(pa.type, pb.type, f"{prefix}.type")
+        _eq(pa.low, pb.low, f"{prefix}.low")
+        _eq(pa.high, pb.high, f"{prefix}.high")
+        _eq(pa.step, pb.step, f"{prefix}.step")
+        _eq(pa.choices, pb.choices, f"{prefix}.choices")
+
+    _eq(a.static_params, b.static_params, "static_params")
+
+
+def merge_params(base: ParamsConfig, override: ParamsConfig) -> ParamsConfig:
+    """Merge *override* on top of *base*, returning a new ``ParamsConfig``.
+
+    All top-level fields from *override* replace the corresponding fields
+    in *base*. Nested dicts/lists are deep-copied so mutations on the
+    result do not leak back to either input.
+
+    Raises:
+        ValueError: if the two configs are not compatible (use
+            :func:`validate_params_match` first).
+    """
+    return ParamsConfig(
+        optimizer=copy.deepcopy(override.optimizer),
+        parameters=[copy.deepcopy(p) for p in override.parameters],
+        static_params=copy.deepcopy(override.static_params),
+    )
+
+
 def load_params(path: Path) -> ParamsConfig:
     """Load and validate a parameter search-space YAML file.
 
