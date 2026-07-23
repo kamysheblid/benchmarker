@@ -582,28 +582,6 @@ def _load_bundled(name: str, loader: Callable[[Path], Any]) -> Any:
         raise FileNotFoundError(f"Bundled default {name!r} could not be loaded: {exc}") from exc
 
 
-def load_benchmark_file(path: Path) -> tuple[TestSuite, ParamsConfig | None]:
-    """Load a single benchmark YAML file.
-
-    Returns:
-        A tuple of (TestSuite, ParamsConfig | None).
-    """
-    path = Path(path)
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"benchmark YAML must be a mapping: {path}")
-    tests_raw = raw.get("tests", [])
-    if isinstance(tests_raw, dict):
-        tests_raw = tests_raw.get("tests", [])
-    categories = raw.get("categories", {})
-    suite = TestSuite(tests=tests_raw, categories=categories)
-    params = None
-    if any(k in raw for k in ("optimizer", "parameters", "static_params")):
-        params_raw = {k: raw[k] for k in ("optimizer", "parameters", "static_params") if k in raw}
-        params = ParamsConfig.model_validate(params_raw)
-    return suite, params
-
-
 def discover_benchmark_files(path: Path) -> list[Path]:
     """Discover benchmark YAML files at or under *path*.
 
