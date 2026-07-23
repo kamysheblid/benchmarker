@@ -385,9 +385,6 @@ def create_optimizer(
     When ``refinement_hint`` is provided and the optimizer type is ``grid``,
     an :class:`AdaptiveOptimizer` is returned instead — narrowing the search
     space to the hinted ranges with finer granularity.
-
-    For ``bayesian`` and ``random`` types, a :class:`TwoPhaseOptimizer` is
-    returned so the runner can do coarse-then-fine search.
     """
     if refinement_hint and config.type in ("grid", "random"):
         return AdaptiveOptimizer(parameters, refinement_hint=refinement_hint, resolution_factor=resolution_factor)

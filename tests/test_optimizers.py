@@ -206,10 +206,10 @@ def test_factory_invalid_type_raises() -> None:
 def test_create_optimizer_factory() -> None:
     assert isinstance(create_optimizer(OptimizerConfig(type="grid", budget=5), _specs()), GridOptimizer)
     assert isinstance(
-        create_optimizer(OptimizerConfig(type="random", budget=5), _specs()), TwoPhaseOptimizer
+        create_optimizer(OptimizerConfig(type="random", budget=5), _specs()), RandomOptimizer
     )
     assert isinstance(
-        create_optimizer(OptimizerConfig(type="bayesian", budget=5), _specs()), TwoPhaseOptimizer
+        create_optimizer(OptimizerConfig(type="bayesian", budget=5), _specs()), BayesianOptimizer
     )
 
 
