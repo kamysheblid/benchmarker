@@ -160,7 +160,6 @@ class Runner:
         cost_per_1m_input: float = 0.0,
         cost_per_1m_output: float = 0.0,
         history_path: Path | None = None,
-        params_path: Path | None = None,
         resume: bool = False,
         force: bool = False,
         circuit_breaker: CircuitBreaker | None = None,
@@ -179,7 +178,6 @@ class Runner:
         self.cost_per_1m_input = cost_per_1m_input
         self.cost_per_1m_output = cost_per_1m_output
         self.history_path = history_path
-        self.params_path = params_path
         self.resume = resume
         self.force = force
         self._history: list[OptimizerTrial] = []
@@ -345,7 +343,6 @@ class Runner:
 
             auto_scores = evaluate_run(results)
             self._save_auto_eval(auto_scores)
-            self._write_refinement_hints(results, auto_scores)
 
         return results, auto_scores
 
@@ -443,26 +440,6 @@ class Runner:
                     "scores": metrics,
                 })
         path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-
-    def _write_refinement_hints(
-        self, results: list[RunResult], auto_scores: dict[str, dict[str, float]]
-    ) -> None:
-        """Write refinement_hints to params.yaml from passing auto-eval configs."""
-        if not self.params_path or not self.params_path.exists():
-            return
-        hints = _build_refinement_hint_from_passing(results, auto_scores)
-        if not hints:
-            return
-        try:
-            import yaml
-
-            raw = yaml.safe_load(self.params_path.read_text(encoding="utf-8")) or {}
-            raw["refinement_hints"] = hints
-            self.params_path.write_text(
-                yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8"
-            )
-        except (OSError, yaml.YAMLError) as exc:
-            logger.warning("failed to write refinement hints: %s", exc)
 
     def _save_history(self, top_k: int = 20) -> None:
         """Persist optimizer trial history to JSON, keeping only the top-K trials."""

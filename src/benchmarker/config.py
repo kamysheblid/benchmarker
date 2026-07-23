@@ -515,3 +515,85 @@ def _load_bundled(name: str, loader: Callable[[Path], Any]) -> Any:
             return loader(path)
     except (ModuleNotFoundError, FileNotFoundError, ValidationError) as exc:
         raise FileNotFoundError(f"Bundled default {name!r} could not be loaded: {exc}") from exc
+
+
+def load_benchmark_file(path: Path) -> tuple[TestSuite, ParamsConfig | None]:
+    """Load a single benchmark YAML file.
+
+    Returns:
+        A tuple of (TestSuite, ParamsConfig | None).
+    """
+    path = Path(path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"benchmark YAML must be a mapping: {path}")
+    tests_raw = raw.get("tests", [])
+    if isinstance(tests_raw, dict):
+        tests_raw = tests_raw.get("tests", [])
+    categories = raw.get("categories", {})
+    suite = TestSuite(tests=tests_raw, categories=categories)
+    params = None
+    if any(k in raw for k in ("optimizer", "parameters", "static_params")):
+        params_raw = {k: raw[k] for k in ("optimizer", "parameters", "static_params") if k in raw}
+        params = ParamsConfig.model_validate(params_raw)
+    return suite, params
+
+
+def discover_benchmark_files(path: Path) -> list[Path]:
+    """Discover benchmark YAML files at or under *path*.
+
+    If *path* is a file, return [path] only if it ends with .yaml/.yml.
+    If *path* is a directory, return all **/*.yaml and **/*.yml files.
+    """
+    path = Path(path)
+    if path.is_file():
+        if path.suffix not in {".yaml", ".yml"}:
+            return []
+        return [path]
+    if not path.is_dir():
+        return []
+    return sorted(p for p in path.rglob("*") if p.is_file() and p.suffix in {".yaml", ".yml"})
+
+
+def validate_params_match(a: ParamsConfig | None, b: ParamsConfig | None) -> None:
+    """Validate that two ParamsConfig objects match.
+
+    Passes when either argument is None or when all relevant fields match.
+    Raises ValueError on the first mismatch found.
+    """
+    if a is None or b is None:
+        return
+    if a.optimizer.type != b.optimizer.type:
+        raise ValueError(f"optimizer mismatch: {a.optimizer.type} != {b.optimizer.type}")
+    if a.optimizer.budget != b.optimizer.budget:
+        raise ValueError(f"optimizer budget mismatch: {a.optimizer.budget} != {b.optimizer.budget}")
+    if len(a.parameters) != len(b.parameters):
+        raise ValueError(
+            f"parameter count mismatch: {len(a.parameters)} != {len(b.parameters)}"
+        )
+    for i, (pa, pb) in enumerate(zip(a.parameters, b.parameters)):
+        if pa.name != pb.name:
+            raise ValueError(f"parameter[{i}] name mismatch: {pa.name} != {pb.name}")
+        if pa.type != pb.type:
+            raise ValueError(f"parameter[{i}] type mismatch: {pa.type} != {pb.type}")
+        if pa.low != pb.low:
+            raise ValueError(f"parameter[{i}] low mismatch: {pa.low} != {pb.low}")
+        if pa.high != pb.high:
+            raise ValueError(f"parameter[{i}] high mismatch: {pa.high} != {pb.high}")
+        if pa.step != pb.step:
+            raise ValueError(f"parameter[{i}] step mismatch: {pa.step} != {pb.step}")
+        if pa.choices != pb.choices:
+            raise ValueError(f"parameter[{i}] choices mismatch: {pa.choices} != {pb.choices}")
+    if a.static_params != b.static_params:
+        raise ValueError("static_params mismatch")
+
+
+def merge_params(base: ParamsConfig, override: ParamsConfig) -> ParamsConfig:
+    """Merge override ParamsConfig into a deep copy of base."""
+    import copy
+
+    merged = copy.deepcopy(base)
+    merged.optimizer = override.optimizer
+    merged.parameters = copy.deepcopy(override.parameters)
+    merged.static_params = copy.deepcopy(override.static_params)
+    return merged
