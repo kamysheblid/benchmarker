@@ -17,7 +17,9 @@ from benchmarker.config import (
     load_params,
     load_tests,
     load_tests_from_dir,
+    merge_params,
     validate_params,
+    validate_params_match,
 )
 
 
@@ -433,3 +435,187 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
         ],
     )
     validate_params(cfg)  # should not raise
+
+
+# --------------------------------------------------------------------------- #
+# validate_params_match (2.1)
+# --------------------------------------------------------------------------- #
+def test_validate_params_match_both_none() -> None:
+    validate_params_match(None, None)  # should not raise
+
+
+def test_validate_params_match_one_none() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+    )
+    validate_params_match(None, cfg)  # should not raise
+    validate_params_match(cfg, None)  # should not raise
+
+
+def test_validate_params_match_identical() -> None:
+    cfg = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian", budget=20, baseline={"x": 1}),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0, step=0.1, choices=None)],
+        static_params={"a": 1},
+    )
+    validate_params_match(cfg, cfg)  # should not raise
+
+
+def test_validate_params_match_optimizer_type_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(type="bayesian"))
+    b = ParamsConfig(optimizer=OptimizerConfig(type="grid"))
+    with pytest.raises(ValueError, match="optimizer.type"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_optimizer_budget_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(budget=10))
+    b = ParamsConfig(optimizer=OptimizerConfig(budget=20))
+    with pytest.raises(ValueError, match="optimizer.budget"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_optimizer_baseline_mismatch() -> None:
+    a = ParamsConfig(optimizer=OptimizerConfig(baseline={"x": 1}))
+    b = ParamsConfig(optimizer=OptimizerConfig(baseline={"x": 2}))
+    with pytest.raises(ValueError, match="optimizer.baseline"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_name_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="b", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].name"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_type_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.INT, low=0, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].type"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_low_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0.5, high=1)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].low"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_high_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=2)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].high"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_step_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1, step=0.1)],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.FLOAT, low=0, high=1, step=0.2)],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].step"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_parameters_choices_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.CATEGORICAL, choices=["x", "y"])],
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        parameters=[ParameterSpec(name="a", type=ParameterType.CATEGORICAL, choices=["x", "z"])],
+    )
+    with pytest.raises(ValueError, match="parameters\\[0\\].choices"):
+        validate_params_match(a, b)
+
+
+def test_validate_params_match_static_params_mismatch() -> None:
+    a = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        static_params={"a": 1},
+    )
+    b = ParamsConfig(
+        optimizer=OptimizerConfig(),
+        static_params={"a": 2},
+    )
+    with pytest.raises(ValueError, match="static_params"):
+        validate_params_match(a, b)
+
+
+# --------------------------------------------------------------------------- #
+# merge_params (2.2)
+# --------------------------------------------------------------------------- #
+def test_merge_params_overrides_field() -> None:
+    base = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian", budget=20),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+        static_params={"a": 1},
+    )
+    override = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid", budget=10),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
+        static_params={"a": 2, "b": 3},
+    )
+    merged = merge_params(base, override)
+    assert merged.optimizer.type == "grid"
+    assert merged.optimizer.budget == 10
+    assert merged.parameters[0].low == 0.2
+    assert merged.static_params == {"a": 2, "b": 3}
+
+    # Base is unchanged
+    assert base.optimizer.type == "bayesian"
+    assert base.optimizer.budget == 20
+    assert base.parameters[0].low == 0.1
+    assert base.static_params == {"a": 1}
+
+
+def test_merge_params_deepcopy_prevents_mutation_leak() -> None:
+    base = ParamsConfig(
+        optimizer=OptimizerConfig(type="bayesian"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.1, high=1.0)],
+        static_params={"a": [1, 2]},
+    )
+    override = ParamsConfig(
+        optimizer=OptimizerConfig(type="grid"),
+        parameters=[ParameterSpec(name="temperature", type=ParameterType.FLOAT, low=0.2, high=1.0)],
+        static_params={"a": [3, 4]},
+    )
+    merged = merge_params(base, override)
+    # Mutate merged nested fields
+    merged.parameters[0].low = 99.0
+    merged.static_params["a"].append(99)
+    # Base must remain unchanged
+    assert base.parameters[0].low == 0.1
+    assert base.static_params["a"] == [1, 2]
