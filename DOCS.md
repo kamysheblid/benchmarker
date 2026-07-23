@@ -4,6 +4,41 @@ This file contains detailed configuration, workflow internals, and reference mat
 
 For a quick start, see `README.md`.
 
+## Table of Contents
+
+- [Workflow](#workflow)
+  - [1. Initialise (once)](#1-initialise-once)
+  - [2. Run a benchmark](#2-run-a-benchmark)
+  - [3. Judge the results](#3-judge-the-results)
+  - [4. Parse the judge's reply](#4-parse-the-judges-reply)
+  - [Full cycle example](#full-cycle-example)
+- [CLI commands](#cli-commands)
+  - [`benchmarker run` options](#benchmarker-run-options)
+- [Configuration file formats](#configuration-file-formats)
+  - [`benchmarks/` — test prompts](#benchmarks--test-prompts)
+    - [Single-prompt file format](#single-prompt-file-format)
+    - [`--categories` flag](#--categories-flag)
+    - [Backward compatibility](#backward-compatibility)
+    - [Valid category slugs](#valid-category-slugs)
+  - [`params.yaml` — search space](#paramsyaml--search-space)
+    - [Optimizer types](#optimizer-types)
+    - [Budget](#budget)
+    - [Parameter types](#parameter-types)
+- [Agent-Specific Benchmarking](#agent-specific-benchmarking)
+  - [Agent Benchmarks Structure](#agent-benchmarks-structure)
+  - [System Prompts](#system-prompts)
+  - [Reasoning Flag by Agent Type](#reasoning-flag-by-agent-type)
+  - [Repeat Counts by Agent](#repeat-counts-by-agent)
+  - [Per-Agent Judge Criteria](#per-agent-judge-criteria)
+  - [Running Agent Benchmarks](#running-agent-benchmarks)
+- [Logging & Resilience](#logging--resilience)
+  - [Structured logs](#structured-logs)
+  - [Verbose console output](#verbose-console-output)
+  - [Resume and force](#resume-and-force)
+  - [Error reports](#error-reports)
+  - [Circuit breaker](#circuit-breaker)
+- [Tests](#tests)
+
 ## Workflow
 
 The tool follows a two-step loop:
