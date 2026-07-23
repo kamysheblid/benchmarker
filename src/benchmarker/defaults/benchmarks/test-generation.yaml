@@ -1,0 +1,56 @@
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+  - name: top_p
+    type: float
+    low: 0.1
+    high: 1.0
+    step: 0.1
+  - name: min_p
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+  - name: repeat_penalty
+    type: float
+    low: 1.0
+    high: 1.2
+    step: 0.1
+  - name: frequency_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+  - name: presence_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: test_generation
+    prompt: |
+      You are a testing assistant. Generate comprehensive unit tests for the following function using pytest. Include tests for normal cases, edge cases (empty list, single element), and error conditions. Output only the test code with no explanation.
+
+      Function to test:
+      def divide_list(items, divisor):
+          """Divide each element in items by divisor. Raises ZeroDivisionError if divisor is 0."""
+          if divisor == 0:
+              raise ZeroDivisionError("divisor cannot be zero")
+          return [item / divisor for item in items]
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false

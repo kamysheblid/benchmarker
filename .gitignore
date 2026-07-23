@@ -20,7 +20,7 @@ benchmark_runs/
 judge.json
 params.yaml
 tests.json
-benchmarks/
+/benchmarks/
 uv.lock
 *.md
 !README.md

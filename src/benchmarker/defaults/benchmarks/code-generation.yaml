@@ -1,0 +1,75 @@
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+  - name: top_p
+    type: float
+    low: 0.1
+    high: 1.0
+    step: 0.1
+  - name: min_p
+    type: float
+    low: 0.0
+    high: 0.2
+    step: 0.05
+  - name: repeat_penalty
+    type: float
+    low: 1.0
+    high: 1.2
+    step: 0.1
+  - name: frequency_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+  - name: presence_penalty
+    type: float
+    low: 0.0
+    high: 1.0
+    step: 0.5
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: coding_chunk
+    prompt: |
+      You are a code generation assistant. Return a complete Python function with a one-line docstring. Do not include any explanation. Only output the function code.
+
+      Task: Write a function def chunk(seq, n) that splits a sequence into consecutive chunks of size n, with the final chunk containing any remainder. Include a one-line docstring and a short usage example in a comment.
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false
+  - id: algorithmic_palindrome
+    prompt: |
+      You are a code generation assistant. Return a complete Python function with a one-line docstring. Do not include any explanation. Only output the function code.
+
+      Task: Write a function def longest_palindromic_substring(s: str) -> str that finds the longest palindromic substring in O(n²) time. Include a one-line docstring and a short usage example in a comment.
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false
+  - id: algorithmic_twosum
+    prompt: |
+      You are a code generation assistant. Return a complete Python function with a one-line docstring. Do not include any explanation. Only output the function code.
+
+      Task: Write a function def two_sum(nums: list[int], target: int) -> list[int] that returns the indices of two numbers in nums that add up to target. Assume exactly one solution exists. Include a one-line docstring and a short usage example in a comment.
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false
+  - id: algorithmic_bst
+    prompt: |
+      You are a code generation assistant. Return a complete Python class for a binary search tree. Do not include any explanation. Only output the class code.
+
+      Task: Implement a BinarySearchTree class with methods insert(value) and in_order_traversal() -> list. Include a one-line class docstring and a short usage example in a comment.
+    max_tokens: 2048
+    repeat: 5
+    reasoning: false

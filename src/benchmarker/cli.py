@@ -2,11 +2,13 @@
 
 import asyncio
 import csv
-import json
 import logging
 import shutil
-import sys
 from pathlib import Path
+
+from typing import Any
+
+import yaml
 
 import click
 from rich.console import Console
@@ -37,23 +39,6 @@ def main() -> None:
     """benchmarker - find optimal LLM sampling parameters."""
 
 
-_CATEGORY_MAP = {
-    "coding_chunk": "code-generation",
-    "algorithmic_palindrome": "code-generation",
-    "algorithmic_twosum": "code-generation",
-    "algorithmic_bst": "code-generation",
-    "bugfixing": "bug-fixing",
-    "refactoring": "refactoring",
-    "explanation_sql": "security-vulnerability",
-    "explanation_complexity": "comment-generation",
-    "integration_api": "api-integration",
-    "test_generation": "test-generation",
-    "creative": "general",
-    "reasoning": "general",
-    "factual": "general",
-}
-
-
 # ------------------------------------------------------------------ #
 #  init                                                               #
 # ------------------------------------------------------------------ #
@@ -73,13 +58,11 @@ _CATEGORY_MAP = {
     help="Overwrite existing files.",
 )
 def init(target_dir: Path, force: bool) -> None:
-    """Create default config files (benchmarks/, params.yaml) in the given directory."""
+    """Create default self-contained benchmark files in the given directory."""
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     benchmarks_dest = target_dir / "benchmarks"
-    params_dest = target_dir / "params.yaml"
-
     copied = []
 
     if not benchmarks_dest.exists() or force:
@@ -88,28 +71,13 @@ def init(target_dir: Path, force: bool) -> None:
         benchmarks_dest.mkdir(parents=True, exist_ok=True)
 
         suite = load_tests_default()
-        counters: dict[str, int] = {}
-        for test in suite.tests:
-            category = _CATEGORY_MAP.get(test.id, "general")
-            counters[category] = counters.get(category, 0) + 1
-            cat_dir = benchmarks_dest / category
-            cat_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{counters[category]:03d}-{test.id}.json"
-            filepath = cat_dir / filename
-            filepath.write_text(
-                json.dumps(test.model_dump(exclude_none=True), indent=2),
-                encoding="utf-8",
-            )
-        copied.append(benchmarks_dest)
-    else:
-        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
-
-    if not params_dest.exists() or force:
+        # Load params from bundled defaults for writing into each YAML file
         params = load_params_default()
-        import yaml
-
-        raw = {
-            "optimizer": {"type": params.optimizer.type, "budget": params.optimizer.budget},
+        params_raw = {
+            "optimizer": {
+                "type": params.optimizer.type,
+                "budget": params.optimizer.budget,
+            },
             "parameters": [
                 {
                     "name": p.name,
@@ -123,10 +91,24 @@ def init(target_dir: Path, force: bool) -> None:
             ],
             "static_params": params.static_params,
         }
-        params_dest.write_text(yaml.safe_dump(raw, default_flow_style=False), encoding="utf-8")
-        copied.append(params_dest)
+
+        # Group tests by category from suite metadata
+        by_category: dict[str, list[dict[str, Any]]] = {}
+        for tc in suite.tests:
+            cat = suite.categories.get(tc.id, "general")
+            by_category.setdefault(cat, []).append(tc.model_dump(exclude_none=True))
+
+        for category, tests in sorted(by_category.items()):
+            raw = dict(params_raw)
+            raw["tests"] = tests
+            filepath = benchmarks_dest / f"{category}.yaml"
+            filepath.write_text(
+                yaml.safe_dump(raw, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+            copied.append(filepath)
     else:
-        click.echo(f"  (skip) {params_dest} already exists — use --force to overwrite.")
+        click.echo(f"  (skip) {benchmarks_dest} already exists — use --force to overwrite.")
 
     if copied:
         for f in copied:

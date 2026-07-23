@@ -131,7 +131,7 @@ def test_load_tests_missing_file_raises_with_message(tmp_path: Path) -> None:
 def test_load_tests_duplicate_ids_raises(tmp_path: Path) -> None:
     path = tmp_path / "tests.json"
     path.write_text(json.dumps([{"id": "t1", "prompt": "a"}, {"id": "t1", "prompt": "b"}]))
-    with pytest.raises(ValidationError) as exc:
+    with pytest.raises(ValueError) as exc:
         load_tests(path)
     assert "duplicate test id" in str(exc.value)
 
@@ -433,3 +433,189 @@ def test_validate_params_categorical_skips_numeric_checks() -> None:
         ],
     )
     validate_params(cfg)  # should not raise
+
+
+# --------------------------------------------------------------------------- #
+# Phase 6: YAML benchmark file loading
+# --------------------------------------------------------------------------- #
+def test_discover_benchmark_files_directory(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    cat = tmp_path / "cat-a"
+    cat.mkdir()
+    (cat / "001-first.yaml").write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t1\n    prompt: A\n")
+    (cat / "002-second.yaml").write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t2\n    prompt: B\n")
+    (cat / "readme.txt").write_text("ignored")
+
+    files = discover_benchmark_files(tmp_path)
+    assert [p.name for p in files] == ["001-first.yaml", "002-second.yaml"]
+
+
+def test_discover_benchmark_files_single_file(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    f = tmp_path / "single.yaml"
+    f.write_text("optimizer:\n  type: bayesian\n  budget: 10\nparameters: []\nstatic_params: {}\ntests:\n  - id: t1\n    prompt: A\n")
+    files = discover_benchmark_files(f)
+    assert files == [f]
+
+
+def test_discover_benchmark_files_ignores_non_yaml(tmp_path: Path) -> None:
+    from benchmarker.config import discover_benchmark_files
+
+    (tmp_path / "ignored.json").write_text("{}")
+    files = discover_benchmark_files(tmp_path)
+    assert files == []
+
+
+def test_load_benchmark_file_valid(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters:
+  - name: temperature
+    type: float
+    low: 0.1
+    high: 1.0
+static_params:
+  key: value
+tests:
+  - id: t1
+    prompt: "Say hi"
+    max_tokens: 50
+    repeat: 2
+    reasoning: false
+"""
+    path = tmp_path / "bench.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, params = load_benchmark_file(path)
+    assert isinstance(suite, TestSuite)
+    assert len(suite.tests) == 1
+    assert suite.tests[0].id == "t1"
+    assert suite.tests[0].prompt == "Say hi"
+    assert suite.tests[0].repeat == 2
+    assert params is not None
+    assert params.optimizer.type == "grid"
+    assert params.optimizer.budget == 5
+    assert params.parameters[0].name == "temperature"
+    assert params.static_params == {"key": "value"}
+
+
+def test_load_benchmark_file_no_optimizer_returns_none_params(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+tests:
+  - id: t1
+    prompt: "Say hi"
+"""
+    path = tmp_path / "fallback.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, params = load_benchmark_file(path)
+    assert isinstance(suite, TestSuite)
+    assert len(suite.tests) == 1
+    assert params is None
+
+
+def test_load_benchmark_file_missing_id_auto_generates(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - prompt: "A"
+  - prompt: "B"
+"""
+    path = tmp_path / "autoid.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, params = load_benchmark_file(path)
+    ids = [t.id for t in suite.tests]
+    assert ids == ["autoid-test-1", "autoid-test-2"]
+
+
+def test_load_benchmark_file_mixed_explicit_and_missing_ids(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - id: custom
+    prompt: "A"
+  - prompt: "B"
+"""
+    path = tmp_path / "mixed.yaml"
+    path.write_text(raw, encoding="utf-8")
+    suite, _ = load_benchmark_file(path)
+    ids = [t.id for t in suite.tests]
+    assert ids == ["custom", "mixed-test-1"]
+
+
+def test_load_benchmark_file_duplicate_ids_raises_value_error(tmp_path: Path) -> None:
+    from benchmarker.config import load_benchmark_file
+
+    raw = """
+optimizer:
+  type: grid
+  budget: 5
+parameters: []
+static_params: {}
+tests:
+  - id: t1
+    prompt: "A"
+  - id: t1
+    prompt: "B"
+"""
+    path = tmp_path / "dup.yaml"
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate test id"):
+        load_benchmark_file(path)
+
+
+def test_load_tests_missing_id_raises_value_error(tmp_path: Path) -> None:
+    path = tmp_path / "tests.json"
+    path.write_text(json.dumps([{"prompt": "Hi"}]))
+    with pytest.raises(ValueError, match="missing test id"):
+        load_tests(path)
+
+
+def test_load_tests_default_returns_all_suites(tmp_path: Path) -> None:
+    from benchmarker.config import load_tests_default
+
+    suite = load_tests_default()
+    assert isinstance(suite, TestSuite)
+    assert len(suite.tests) == 13
+    ids = {t.id for t in suite.tests}
+    assert {
+        "creative",
+        "reasoning",
+        "factual",
+        "coding_chunk",
+        "algorithmic_palindrome",
+        "algorithmic_twosum",
+        "algorithmic_bst",
+        "bugfixing",
+        "refactoring",
+        "explanation_sql",
+        "explanation_complexity",
+        "integration_api",
+        "test_generation",
+    } == ids
+
+
+def test_load_tests_default_all_have_prompts_and_repeat(tmp_path: Path) -> None:
+    from benchmarker.config import load_tests_default
+
+    suite = load_tests_default()
+    assert all(t.prompt.strip() for t in suite.tests)
+    assert all(t.repeat >= 5 for t in suite.tests)

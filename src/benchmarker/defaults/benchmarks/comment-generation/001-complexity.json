@@ -1,7 +1,0 @@
-{
-  "id": "explanation_complexity",
-  "prompt": "You are a computer science tutor. Analyze the time complexity of the following recursive function. Explain your reasoning step by step, then state the Big-O complexity.\n\ndef mystery(n):\n    if n <= 1:\n        return 1\n    return mystery(n - 1) + mystery(n - 1)",
-  "max_tokens": 2048,
-  "repeat": 5,
-  "reasoning": true
-}

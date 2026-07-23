@@ -15,12 +15,13 @@ For a quick start, see `README.md`.
 - [CLI commands](#cli-commands)
   - [`benchmarker run` options](#benchmarker-run-options)
 - [Configuration file formats](#configuration-file-formats)
-  - [`benchmarks/` — test prompts](#benchmarks--test-prompts)
-    - [Single-prompt file format](#single-prompt-file-format)
-    - [`--categories` flag](#--categories-flag)
+  - [`benchmarks/*.yaml` — self-contained benchmark files](#benchmarksyaml--self-contained-benchmark-files)
+    - [File format](#file-format)
+    - [Block scalar prompts](#block-scalar-prompts)
+    - [Auto-generated IDs](#auto-generated-ids)
     - [Backward compatibility](#backward-compatibility)
-    - [Valid category slugs](#valid-category-slugs)
-  - [`params.yaml` — search space](#paramsyaml--search-space)
+    - [Migration from old format](#migration-from-old-format)
+  - [`params.yaml` — search space (legacy)](#paramsyaml--search-space-legacy)
     - [Optimizer types](#optimizer-types)
     - [Budget](#budget)
     - [Parameter types](#parameter-types)
@@ -49,10 +50,10 @@ The tool follows a two-step loop:
 benchmarker init
 ```
 
-Creates a `benchmarks/` directory and `params.yaml` in the current directory with
-sensible defaults. The `benchmarks/` directory contains category subdirectories,
-each holding one JSON file per prompt. Edit them to customise your prompts and
-parameter search space.
+Creates a `benchmarks/` directory populated with starter self-contained `.yaml` files
+(one per category). Each file contains its own `optimizer`, `parameters`, `static_params`,
+and `tests` list, so you can customise prompts and search space without a separate
+`params.yaml`.
 
 ### 2. Run a benchmark
 
@@ -60,15 +61,14 @@ parameter search space.
 benchmarker run --model my-model --url http://localhost:8080/v1/chat/completions
 ```
 
+If no `benchmarks/` directory is found in the current working directory, the tool falls
+back to the bundled default test suite (self-contained YAML files packaged with
+`benchmarker`).
+
 This writes:
 - `benchmark_runs/latest/raw_data.json` — raw metrics
 - `benchmark_runs/latest/judge_prompt.md` — a self-contained file for the judge
-
-You can limit the run to specific categories with `--categories`:
-
-```bash
-benchmarker run --model my-model --categories bug-fixing,code-generation
-```
+- `benchmark_runs/latest/run_meta.json` — benchmark source metadata for `parse`
 
 ### 3. Judge the results
 
@@ -94,11 +94,11 @@ The tool then automatically:
 | Recommendation | Action |
 |---|---|
 | **conclude** | Prints the best configuration, judge's reasoning, and scores. |
-| **refine** | Narrows the parameter ranges in `params.yaml` and tells you to re-run. |
+| **refine** | Narrows the parameter ranges in the source benchmark YAML and tells you to re-run. |
 | **expand** | Suggests broadening the search or adding more tests. |
 
-If `refine`, just run `benchmarker run` again with no changes — `params.yaml` is
-already updated with tighter ranges.
+If `refine`, just run `benchmarker run` again with no changes — the benchmark YAML
+is already updated with tighter ranges.
 
 ### Full cycle example
 
@@ -109,21 +109,18 @@ benchmarker init
 # 2. Run (all categories)
 benchmarker run --model Qwen3.5-4B-Q4_K_M --url http://127.0.0.1:8080/v1/chat/completions
 
-# Or run only specific categories
-benchmarker run --model Qwen3.5-4B-Q4_K_M --categories bug-fixing,refactoring
-
 # 3. Copy judge_prompt.md → ChatGPT → save reply as judge_reply.txt
 
 # 4. Parse
 benchmarker parse judge_reply.txt
 # → If conclude: done
-# → If refine: params.yaml is updated, run again
+# → If refine: benchmark YAML is updated, run again
 ```
 
 ## CLI commands
 
 ```
-benchmarker init     Create benchmarks/ directory and params.yaml
+benchmarker init     Create benchmarks/ directory with self-contained YAML files
 benchmarker run      Run a benchmark for the given model
 benchmarker parse    Parse the judge's reply and take action
 ```
@@ -132,85 +129,107 @@ benchmarker parse    Parse the judge's reply and take action
 
 ```
 --tests PATH        Path to test suite JSON file or benchmarks/ directory
-                    (default: benchmarks)
 --categories TEXT   Comma-separated category slugs to load (directory mode only)
+--params PATH       Path to parameter search-space YAML
 ```
 
 ## Configuration file formats
 
-### `benchmarks/` — test prompts
+### `benchmarks/*.yaml` — self-contained benchmark files
 
-`benchmarker init` creates a `benchmarks/` directory containing category
-subdirectories. Each category holds one JSON file per prompt.
+`benchmarker init` creates a `benchmarks/` directory containing self-contained YAML
+files, one per starter category.
 
 ```
 benchmarks/
-├── api-integration/
-│   └── 001-fetch-json.json
-├── bug-fixing/
-│   └── 001-logic-error.json
-├── code-generation/
-│   ├── 001-chunk-seq.json
-│   ├── 002-palindrome.json
-│   ├── 003-twosum.json
-│   └── 004-bst.json
-├── comment-generation/
-│   └── 001-complexity.json
-├── general/
-│   ├── 001-creative.json
-│   ├── 002-reasoning.json
-│   └── 003-factual.json
-├── refactoring/
-│   └── 001-type-hints.json
-├── security-vulnerability/
-│   └── 001-sql-injection.json
-└── test-generation/
-    └── 001-divide-list.json
+├── api-integration.yaml
+├── bug-fixing.yaml
+├── code-generation.yaml
+├── comment-generation.yaml
+├── general.yaml
+├── refactoring.yaml
+├── security-vulnerability.yaml
+└── test-generation.yaml
 ```
 
 `init` creates the 8 starter categories shown above. You can add more categories
-by creating additional subdirectories under `benchmarks/`.
+by creating additional `.yaml` files under `benchmarks/`.
 
-#### Single-prompt file format
+#### File format
 
-Each `.json` file contains exactly one prompt object:
+Each `.yaml` file is fully self-contained:
 
-```json
-{
-  "id": "bugfixing",
-  "prompt": "Explain the bug in the following code, then provide the corrected version...",
-  "max_tokens": 2048,
-  "repeat": 5,
-  "reasoning": true,
-  "stop": ["\ndef ", "\nclass "]
-}
+```yaml
+optimizer:
+  type: bayesian
+  budget: 40
+parameters:
+  - name: temperature
+    type: float
+    low: 0.0
+    high: 1.5
+    step: 0.2
+  - name: top_k
+    type: int
+    low: 10
+    high: 100
+    step: 10
+static_params:
+  chat_template_kwargs:
+    enable_thinking: false
+tests:
+  - id: bugfixing
+    prompt: |
+      You are a debugging assistant. Explain the bug in the following code...
+    max_tokens: 2048
+    repeat: 5
+    reasoning: true
 ```
 
 Supported fields:
 
-- `id` (str, required): Unique identifier for the test case.
-- `prompt` (str, required): The benchmark prompt. Must not be empty.
-- `system` (str, optional): System message override.
-- `max_tokens` (positive int, optional): Maximum tokens to generate.
-- `repeat` (int, default 1): Number of times to repeat this test.
-- `stop` (list[str], optional): Stop sequences.
-- `reasoning` (bool, optional): True = encourage chain-of-thought, False = discourage, None = default.
+- `optimizer.type` — `bayesian`, `grid`, `random`, or `baseline_sweep`
+- `optimizer.budget` — number of configs to evaluate
+- `parameters[]` — search-space parameter specs
+- `static_params` — fixed key/value pairs sent with every request
+- `tests[]` — list of benchmark prompts
+- `tests[].id` (str, optional) — unique identifier. When omitted, the loader
+  auto-generates an id using the pattern `<file-stem>-test-<N>`.
+- `tests[].prompt` (str, required) — the benchmark prompt. Must not be empty.
+- `tests[].system` (str, optional) — system message override.
+- `tests[].max_tokens` (positive int, optional) — maximum tokens to generate.
+- `tests[].repeat` (int, default 1) — number of times to repeat this test.
+- `tests[].reasoning` (bool, optional) — True = encourage chain-of-thought,
+  False = discourage, None = default.
 
-#### `--categories` flag
+#### Block scalar prompts
 
-Use `--categories` to run only a subset of categories:
+Use YAML block scalars (`|`) for multi-line prompts so indentation and newlines
+are preserved exactly:
 
-```bash
-benchmarker run --categories bug-fixing,refactoring
+```yaml
+tests:
+  - id: test_generation
+    prompt: |
+      You are a testing assistant. Generate comprehensive unit tests...
+
+      Function to test:
+      def divide_list(items, divisor):
+          ...
 ```
 
-Validation rules:
-- Slugs are matched **exactly** (case-sensitive) against the subdirectory names
-  under `benchmarks/`.
-- Invalid slugs raise an error listing the valid categories.
-- Empty slugs (e.g. `--categories bug-fixing,,refactoring`) are rejected.
-- `--categories` is only valid in directory mode. Passing it with a legacy flat
-  `tests.json` file raises an error.
+#### Auto-generated IDs
+
+If a test case does not specify an `id`, the loader assigns one automatically:
+
+```yaml
+tests:
+  - prompt: "A"        # becomes `autoid-test-1`
+  - prompt: "B"        # becomes `autoid-test-2`
+```
+
+The auto-id pattern is `<file-stem>-test-<N>`, where `<file-stem>` is the YAML
+filename without the `.yaml` extension.
 
 #### Backward compatibility
 
@@ -224,39 +243,14 @@ benchmarker run --tests tests.json
 When using a flat file, omit `--categories` — category filtering is only available
 in directory mode.
 
-#### Valid category slugs
+#### Migration from old format
 
-| Slug | Description |
-|---|---|
-| `api-integration` | API integration and data fetching |
-| `bug-fixing` | Debugging and logic error correction |
-| `code-completion` | Autocomplete and inline suggestions |
-| `code-generation` | Writing new functions and classes from descriptions |
-| `code-review` | Reviewing code for issues and improvements |
-| `code-summarization` || `code-translation` | Translating code between languages |
-| `cicd-pipeline-configuration` | CI/CD pipeline setup and configuration |
-| `comment-generation` | Explaining code complexity and algorithms |
-| `containerization` | Docker and container setup |
-| `database-schema-design` | Database schema and migration design |
-| `dead-code-elimination` | Removing unused code and imports |
-| `dependency-management` | Managing dependencies and versions |
-| `documentation-generation` | Generating docs and README content |
-| `issue-triage` | Classifying and prioritizing issues |
-| `log-analysis` | Analyzing application and system logs |
-| `natural-language-to-code` | Converting requirements to implementation |
-| `performance-optimization` | Profiling and optimizing code performance |
-| `project-boilerplate` | Scaffolding new project structures |
-| `refactoring` | Improving code structure and type safety |
-| `repository-level-understanding` | Cross-file repo comprehension |
-| `security-vulnerability` | Identifying and fixing security issues |
-| `shell-script-generation` | Writing shell scripts and automation |
-| `sql-query-generation` | Writing and optimizing SQL queries |
-| `test-execution-failure-analysis` | Analyzing test failures and flakiness |
-| `test-generation` | Generating unit tests and test suites |
-| `type-annotation` | Adding and improving type hints |
-| `general` | Non-coding prompts (creative, reasoning, factual) |
+To migrate from the old per-directory JSON format, combine each category's JSON
+files into a single `category.yaml` under `benchmarks/` with the structure shown
+above. The `id`, `prompt`, `max_tokens`, `repeat`, and `reasoning` fields map
+directly to entries in the `tests` list.
 
-### `params.yaml` — search space
+### `params.yaml` — search space (legacy)
 
 ```yaml
 optimizer:
@@ -355,67 +349,43 @@ For categorical parameters, the grid size is the product of all `choices` length
 
 ## Agent-Specific Benchmarking
 
-The `benchmarker` supports agent-specific benchmarking via the `system` field in test JSON files and per-agent judge criteria.
+The `benchmarker` supports agent-specific benchmarking via the `system` field in test YAML files and per-agent judge criteria.
 
 ### Agent Benchmarks Structure
 
-For multi-agent systems like [agent-hive](https://github.com/hung319/agent-hive), create agent-specific benchmark directories:
+For multi-agent systems like [agent-hive](https://github.com/hung319/agent-hive), create agent-specific benchmark YAML files:
 
 ```
 benchmarks/
 ├── hive/                          # Chief Planner & Orchestrator
-│   ├── planning/
-│   ├── orchestration/
-│   └── approval/
+│   ├── planning.yaml
+│   ├── orchestration.yaml
+│   └── approval.yaml
 ├── architect/                     # Feature Architect (planner only)
-│   ├── design/
-│   ├── interviewing/
-│   └── spec-writing/
-├── swarm/                         # Execution Orchestrator
-│   ├── delegation/
-│   ├── verification/
-│   └── parallel-execution/
+│   ├── design.yaml
+│   ├── interviewing.yaml
+│   └── spec-writing.yaml
 ├── scout/                         # Codebase & External Researcher
-│   ├── codebase-exploration/
-│   ├── external-research/
-│   └── dependency-analysis/
-├── forager/                       # Task Executor
-│   ├── implementation/
-│   ├── testing/
-│   └── worktree-management/
-├── hygienic/                      # Quality Reviewer
-│   ├── plan-review/
-│   └── code-review/
-├── code-reviewer/                 # Code Review Specialist
-│   └── diff-review/
-├── code-simplifier/               # Code Simplification
-│   ├── refactoring/
-│   └── complexity-reduction/
-├── codebase-analyzer/             # Codebase Analysis
-│   └── structure/
-├── codebase-locator/              # Code Location
-│   └── semantic-search/
-├── pattern-finder/                # Pattern Discovery
-│   └── anti-patterns/
-└── project-initializer/           # Project Setup
-    └── scaffolding/
+│   ├── codebase-exploration.yaml
+│   ├── external-research.yaml
+│   └── dependency-analysis.yaml
+...
 ```
 
 ### System Prompts
 
-Each test JSON should include a `system` field that mirrors the agent's actual system prompt from source. This ensures the benchmarked model adopts the correct persona, constraints, and output format.
+Each test YAML file should include a `system` field that mirrors the agent's actual system prompt from source. This ensures the benchmarked model adopts the correct persona, constraints, and output format.
 
 Example:
 
-```json
-{
-  "id": "forager-impl-001",
-  "system": "You are Forager, an autonomous senior engineer and task execution agent...",
-  "prompt": "Implement a function in Python...",
-  "max_tokens": 2048,
-  "repeat": 7,
-  "reasoning": false
-}
+```yaml
+tests:
+  - id: forager-impl-001
+    system: "You are Forager, an autonomous senior engineer and task execution agent..."
+    prompt: "Implement a function in Python..."
+    max_tokens: 2048
+    repeat: 7
+    reasoning: false
 ```
 
 See `SYSTEM_PROMPTS.md` for verified system prompts from the agent-hive source.
@@ -465,7 +435,7 @@ Key criteria by agent:
 
 ```bash
 # Run all categories for a specific agent
-benchmarker run --model my-model --categories hive/planning,hive/orchestration
+benchmarker run --model my-model --categories hive/planning
 
 # Run all categories for all agents
 benchmarker run --model my-model

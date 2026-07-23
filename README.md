@@ -14,7 +14,7 @@ pip install -e .
 ## Quick Start
 
 ```bash
-# 1. Initialise benchmarks/ and params.yaml
+# 1. Initialise benchmarks/ with self-contained YAML files
 benchmarker init
 
 # 2. Run a benchmark
@@ -32,8 +32,7 @@ benchmarker parse reply.txt
 |---|---|
 | `--model NAME` | Model name sent to the API |
 | `--url URL` | OpenAI-compatible endpoint (default `http://localhost:8080/v1/chat/completions`) |
-| `--tests PATH` | Test suite JSON or `benchmarks/` directory (default: `benchmarks`) |
-| `--categories SLUGS` | Comma-separated category slugs to load (directory mode only) |
+| `--benchmarks PATH` | Benchmark YAML file or `benchmarks/` directory |
 | `--resume` | Resume from last checkpoint |
 | `--force` | Discard checkpoint and start fresh |
 | `--verbose` | Show retry/backoff details in console |
@@ -52,7 +51,6 @@ For example, with `budget: 16`, `bayesian` might try 16 different temperature/to
 - Varies parameters (temperature, top_p, top_k, repetition_penalty, …)
 - Measures TTFT, tokens/s, total time on every request
 - Saves raw metrics and a judge prompt for external LLM-as-a-judge scoring
-- Agent-specific benchmarks with per-agent judge criteria and reasoning optimization
 - Import judge scores and get a combined speed/quality ranking
 
 For detailed configuration, test formats, logging, and advanced usage, see [DOCS.md](DOCS.md).
