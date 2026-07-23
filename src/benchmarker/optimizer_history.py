@@ -16,7 +16,7 @@ class OptimizerTrial:
     """Single recorded trial for an optimizer history file."""
 
     params: dict[str, Any]
-    quality: float | None = None
+    reliability_score: float | None = None
     tokens_per_sec: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -34,7 +34,7 @@ class OptimizerHistory:
     def to_json(self, path: str | Path, top_k: int | None = None) -> None:
         """Save the history to a JSON file, optionally keeping only the top-K trials.
 
-        When ``top_k`` is provided, trials are sorted by quality/speed descending
+        When ``top_k`` is provided, trials are sorted by reliability_score/speed descending
         and only the best ``top_k`` are persisted. When ``top_k`` is ``None``
         (default), all trials are saved in insertion order for backward
         compatibility.
@@ -44,7 +44,7 @@ class OptimizerHistory:
             sorted_trials = sorted(
                 self.trials,
                 key=lambda t: (
-                    t.quality if t.quality is not None else float("-inf"),
+                    t.reliability_score if t.reliability_score is not None else float("-inf"),
                     t.tokens_per_sec if t.tokens_per_sec is not None else float("-inf"),
                 ),
                 reverse=True,
@@ -55,7 +55,7 @@ class OptimizerHistory:
         payload = [
             {
                 "params": trial.params,
-                "quality": trial.quality,
+                "reliability_score": trial.reliability_score,
                 "tokens_per_sec": trial.tokens_per_sec,
                 "metadata": trial.metadata,
             }
@@ -75,7 +75,7 @@ class OptimizerHistory:
         trials = [
             OptimizerTrial(
                 params=item.get("params", {}),
-                quality=item.get("quality"),
+                reliability_score=item.get("reliability_score"),
                 tokens_per_sec=item.get("tokens_per_sec"),
                 metadata=item.get("metadata", {}),
             )
@@ -88,7 +88,7 @@ class OptimizerHistory:
         for trial in self.trials:
             metrics = {
                 "tokens_per_sec": trial.tokens_per_sec,
-                "quality": trial.quality,
+                "reliability_score": trial.reliability_score,
             }
             if hasattr(optimizer, "study"):
                 try:

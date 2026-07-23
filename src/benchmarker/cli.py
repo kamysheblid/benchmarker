@@ -311,11 +311,11 @@ def run(
     )
     results, auto_scores = asyncio.run(runner.run())
 
-    _print_speed_table(results)
+    _print_quality_table(results)
     if csv_path:
-        _write_speed_csv(csv_path, results)
-        logger.info("Exported speed ranking CSV to %s", csv_path)
-        click.echo(f"Exported speed ranking CSV to {csv_path}")
+        _write_quality_csv(csv_path, results)
+        logger.info("Exported quality ranking CSV to %s", csv_path)
+        click.echo(f"Exported quality ranking CSV to {csv_path}")
 
     if auto_scores:
         _print_auto_eval_summary(results, auto_scores)
@@ -399,45 +399,55 @@ class _RichProgress(ProgressReporter):
         self._progress.stop()
 
 
-def _print_speed_table(results: list) -> None:
-    speeds: dict[str, list[float]] = {}
-    costs: dict[str, list[float]] = {}
+def _print_quality_table(results: list) -> None:
+    per_config: dict[str, list[dict]] = {}
     for r in results:
         if r.error is None:
             k = config_key(r.config)
-            speeds.setdefault(k, []).append(r.tokens_per_sec)
-            costs.setdefault(k, []).append(r.cost_estimate)
+            per_config.setdefault(k, []).append({
+                "success_rate": r.success_rate or 0.0,
+                "coverage": r.coverage or 0.0,
+                "quality": (r.success_rate or 0.0) * (r.coverage or 0.0),
+                "tokens_per_sec": r.tokens_per_sec,
+            })
     ranking = sorted(
-        ((k, sum(v) / len(v)) for k, v in speeds.items()),
+        ((k, sum(v["quality"] for v in vals) / len(vals)) for k, vals in per_config.items()),
         key=lambda x: x[1],
         reverse=True,
     )[:5]
 
-    has_costs = any(any(c > 0 for c in cv) for cv in costs.values())
-
-    table = Table(title="Top Configs by tokens/s (speed only)")
+    table = Table(title="Top Configs by Quality (success_rate × coverage)")
     table.add_column("Config", overflow="fold")
+    table.add_column("Quality", justify="right")
+    table.add_column("Success Rate", justify="right")
+    table.add_column("Coverage", justify="right")
     table.add_column("Avg Tok/s", justify="right")
-    if has_costs:
-        table.add_column("Avg Cost/Req", justify="right")
-    for cfg_key, speed in ranking:
-        avg_cost = sum(costs.get(cfg_key, [0])) / len(costs.get(cfg_key, [1])) if costs.get(cfg_key) else 0
-        row = [cfg_key, f"{speed:.2f}"]
-        if has_costs:
-            row.append(f"${avg_cost:.8f}")
-        table.add_row(*row)
+    for cfg_key, quality in ranking:
+        items = per_config[cfg_key]
+        avg_success = sum(v["success_rate"] for v in items) / len(items)
+        avg_coverage = sum(v["coverage"] for v in items) / len(items)
+        avg_speed = sum(v["tokens_per_sec"] for v in items) / len(items)
+        table.add_row(
+            cfg_key,
+            f"{quality:.3f}",
+            f"{avg_success:.1%}",
+            f"{avg_coverage:.1%}",
+            f"{avg_speed:.2f}",
+        )
     console.print(table)
 
 
-def _write_speed_csv(path: Path, results: list) -> None:
-    speeds: dict[str, list[float]] = {}
+def _write_quality_csv(path: Path, results: list) -> None:
+    per_config: dict[str, list[float]] = {}
     for r in results:
         if r.error is None:
-            speeds.setdefault(config_key(r.config), []).append(r.tokens_per_sec)
+            quality = (r.success_rate or 0.0) * (r.coverage or 0.0)
+            k = config_key(r.config)
+            per_config.setdefault(k, []).append(quality)
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["config", "avg_tokens_per_sec"])
-        for cfg_key, vals in speeds.items():
+        writer.writerow(["config", "quality"])
+        for cfg_key, vals in per_config.items():
             writer.writerow([cfg_key, sum(vals) / len(vals)])
 
 

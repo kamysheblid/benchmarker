@@ -207,7 +207,7 @@ class _MockHistoryOptimizer:
         history = OptimizerHistory.from_json(history_path)
         optimizer = cls(parameters=parameters, budget=budget, seed=seed)
         for trial in history.trials:
-            optimizer.tell({"tokens_per_sec": trial.tokens_per_sec, "quality": trial.quality})
+            optimizer.tell({"tokens_per_sec": trial.tokens_per_sec, "reliability_score": trial.reliability_score})
         return optimizer
 
 
@@ -231,8 +231,9 @@ async def test_runner_saves_optimizer_history(tmp_path: Path) -> None:
     data = json.loads(history_file.read_text())
     assert len(data) == 1
     assert data[0]["params"] == {"temperature": 0.5}
-    assert data[0]["tokens_per_sec"] == 10.0
-    assert data[0]["quality"] is None
+    assert data[0]["reliability_score"] == 1.0
+    assert data[0]["metadata"]["success_rate"] == 1.0
+    assert data[0]["metadata"]["coverage"] == 1.0
 
 
 async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
@@ -240,7 +241,7 @@ async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
     # Seed history with one trial
     history_file = tmp_path / "optimizer_history.json"
     history_file.write_text(
-        json.dumps([{"params": {"temperature": 0.5}, "quality": None, "tokens_per_sec": 10.0}]),
+        json.dumps([{"params": {"temperature": 0.5}, "reliability_score": 0.5, "success_rate": 0.5, "coverage": 0.5}]),
         encoding="utf-8",
     )
     optimizer = _MockHistoryOptimizer(specs, budget=1)
@@ -259,8 +260,10 @@ async def test_runner_replays_history_on_start(tmp_path: Path) -> None:
     # After replay, runner.optimizer is a new instance produced by from_history.
     # The replayed historical trial should be recorded, plus the new trial.
     assert len(runner.optimizer.tell_calls) == 2
-    assert runner.optimizer.tell_calls[0] == {"tokens_per_sec": 10.0, "quality": None}
-    assert runner.optimizer.tell_calls[1]["tokens_per_sec"] == 10.0
+    assert runner.optimizer.tell_calls[0] == {"reliability_score": 0.5, "tokens_per_sec": None}
+    assert runner.optimizer.tell_calls[1]["reliability_score"] == 1.0
+    assert runner.optimizer.tell_calls[1]["success_rate"] == 1.0
+    assert runner.optimizer.tell_calls[1]["coverage"] == 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -429,7 +432,7 @@ async def test_runner_tell_includes_success_rate_and_coverage(tmp_path: Path) ->
     await runner.run()
     assert len(optimizer.tell_calls) == 1
     metrics = optimizer.tell_calls[0]
-    assert "tokens_per_sec" in metrics
+    assert "reliability_score" in metrics
     assert "success_rate" in metrics
     assert "coverage" in metrics
 
@@ -654,12 +657,12 @@ def test_best_config_from_history_empty() -> None:
     assert _best_config_from_history([]) == {}
 
 
-def test_best_config_from_history_best_by_tokens_per_sec() -> None:
+def test_best_config_from_history_best_by_reliability() -> None:
     from benchmarker.runner import _best_config_from_history
     history = [
-        OptimizerTrial(params={"x": 1}, tokens_per_sec=10.0),
-        OptimizerTrial(params={"x": 2}, tokens_per_sec=50.0),
-        OptimizerTrial(params={"x": 3}, tokens_per_sec=30.0),
+        OptimizerTrial(params={"x": 1}, reliability_score=0.3),
+        OptimizerTrial(params={"x": 2}, reliability_score=0.9),
+        OptimizerTrial(params={"x": 3}, reliability_score=0.6),
     ]
     best = _best_config_from_history(history)
     assert best == {"x": 2}

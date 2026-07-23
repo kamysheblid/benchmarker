@@ -165,12 +165,12 @@ class BayesianOptimizer(BaseOptimizer):
         if self._last_trial is None:
             return
         tokens_per_sec = metrics.get("tokens_per_sec")
-        quality = metrics.get("quality")
+        reliability_score = metrics.get("reliability_score")
         success_rate = metrics.get("success_rate")
-        if tokens_per_sec is None and quality is None:
+        if tokens_per_sec is None and reliability_score is None:
             self.study.tell(self._last_trial, state=optuna.trial.TrialState.FAIL)
         else:
-            value = float(tokens_per_sec) if tokens_per_sec is not None else float(quality)
+            value = float(tokens_per_sec) if tokens_per_sec is not None else float(reliability_score)
             self.study.tell(self._last_trial, value)
         self._last_trial = None
 

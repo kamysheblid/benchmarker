@@ -220,18 +220,18 @@ def test_history_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "history.json"
     history = OptimizerHistory(
         trials=[
-            OptimizerTrial(params={"temperature": 0.5}, quality=80.0, tokens_per_sec=100.0),
-            OptimizerTrial(params={"temperature": 0.8}, quality=90.0, tokens_per_sec=120.0),
+            OptimizerTrial(params={"temperature": 0.5}, reliability_score=80.0, tokens_per_sec=100.0),
+            OptimizerTrial(params={"temperature": 0.8}, reliability_score=90.0, tokens_per_sec=120.0),
         ]
     )
     history.to_json(path)
     loaded = OptimizerHistory.from_json(path)
     assert len(loaded.trials) == 2
     assert loaded.trials[0].params == {"temperature": 0.5}
-    assert loaded.trials[0].quality == 80.0
+    assert loaded.trials[0].reliability_score == 80.0
     assert loaded.trials[0].tokens_per_sec == 100.0
     assert loaded.trials[1].params == {"temperature": 0.8}
-    assert loaded.trials[1].quality == 90.0
+    assert loaded.trials[1].reliability_score == 90.0
     assert loaded.trials[1].tokens_per_sec == 120.0
 
 
@@ -239,7 +239,7 @@ def test_bayesian_replay_history(tmp_path: Path) -> None:
     path = tmp_path / "history.json"
     history = OptimizerHistory(
         trials=[
-            OptimizerTrial(params={"temperature": 0.3 + i * 0.1}, quality=50.0 + i * 10.0, tokens_per_sec=80.0 + i * 5.0)
+            OptimizerTrial(params={"temperature": 0.3 + i * 0.1}, reliability_score=50.0 + i * 10.0, tokens_per_sec=80.0 + i * 5.0)
             for i in range(5)
         ]
     )
@@ -260,19 +260,19 @@ def test_history_serialization_with_none_fields(tmp_path: Path) -> None:
     path = tmp_path / "history.json"
     history = OptimizerHistory(
         trials=[
-            OptimizerTrial(params={"x": 1}, quality=None, tokens_per_sec=None),
-            OptimizerTrial(params={"x": 2}, quality=75.0, tokens_per_sec=None),
-            OptimizerTrial(params={"x": 3}, quality=None, tokens_per_sec=60.0),
+            OptimizerTrial(params={"x": 1}, reliability_score=None, tokens_per_sec=None),
+            OptimizerTrial(params={"x": 2}, reliability_score=75.0, tokens_per_sec=None),
+            OptimizerTrial(params={"x": 3}, reliability_score=None, tokens_per_sec=60.0),
         ]
     )
     history.to_json(path)
     loaded = OptimizerHistory.from_json(path)
     assert len(loaded.trials) == 3
-    assert loaded.trials[0].quality is None
+    assert loaded.trials[0].reliability_score is None
     assert loaded.trials[0].tokens_per_sec is None
-    assert loaded.trials[1].quality == 75.0
+    assert loaded.trials[1].reliability_score == 75.0
     assert loaded.trials[1].tokens_per_sec is None
-    assert loaded.trials[2].quality is None
+    assert loaded.trials[2].reliability_score is None
     assert loaded.trials[2].tokens_per_sec == 60.0
 
 

@@ -67,10 +67,10 @@ def config_key(config: dict[str, Any]) -> str:
 
 
 def _best_config_from_history(history: list[OptimizerTrial]) -> dict[str, Any]:
-    """Return the best config by tokens_per_sec from trial history."""
+    """Return the best config by reliability_score from trial history."""
     if not history:
         return {}
-    best = max(history, key=lambda t: t.tokens_per_sec if t.tokens_per_sec is not None else 0.0)
+    best = max(history, key=lambda t: t.reliability_score if t.reliability_score is not None else 0.0)
     return dict(best.params)
 
 
@@ -289,16 +289,16 @@ class Runner:
                 for r in config_results:
                     r.success_rate = success_rate
                     r.coverage = coverage
-                penalized_speed = avg_speed * success_rate
+                quality = success_rate * coverage
                 self.optimizer.tell({
-                    "tokens_per_sec": penalized_speed,
+                    "reliability_score": quality,
                     "success_rate": success_rate,
                     "coverage": coverage,
                 })
                 self._history.append(
                     OptimizerTrial(
                         params=config,
-                        tokens_per_sec=avg_speed,
+                        reliability_score=quality,
                         metadata={"success_rate": success_rate, "coverage": coverage},
                     )
                 )
